@@ -61,6 +61,24 @@ def sample_webm(sample_wav: Path) -> Path:
     return path
 
 
+def _ollama_up() -> bool:
+    """True if Ollama answers, so live tests can skip rather than fail."""
+    import httpx
+
+    try:
+        from backend.config import get_settings
+
+        url = get_settings().ollama_url
+        return httpx.get(f"{url}/api/tags", timeout=2.0).status_code == 200
+    except Exception:  # noqa: BLE001 - any failure means "not available"
+        return False
+
+
+requires_ollama = pytest.mark.skipif(
+    not _ollama_up(), reason="Ollama is not running"
+)
+
+
 @pytest.fixture(scope="session")
 def tiny_settings():
     """Settings pinned to the 'tiny' model so the suite stays fast."""

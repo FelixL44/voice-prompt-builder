@@ -7,7 +7,7 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from backend.main import app
-from tests.conftest import requires_ffmpeg, requires_say
+from tests.conftest import requires_ffmpeg, requires_ollama, requires_say
 
 client = TestClient(app)
 
@@ -135,3 +135,77 @@ def test_frontend_and_backend_agree_on_models() -> None:
 
     for name in ALLOWED_MODELS:
         assert f"{name}:" in speed_table, f"{name} missing from MODEL_SPEED"
+
+
+# ---------------------------------------------------------------------------
+# /analyze
+# ---------------------------------------------------------------------------
+
+
+def test_analyze_requires_a_transcript() -> None:
+    response = client.post("/analyze", json={"transcript": ""})
+
+    assert response.status_code == 422
+
+
+def test_analyze_reports_unreachable_ollama(monkeypatch) -> None:
+    """Ollama being down is a 503 with instructions, not a stack trace."""
+    import httpx
+
+    from backend.config import get_settings
+
+    monkeypatch.setenv("VPB_OLLAMA_URL", "http://localhost:1")
+    get_settings.cache_clear()
+
+    def refuse(*_args: object, **_kwargs: object) -> None:
+        raise httpx.ConnectError("refused")
+
+    monkeypatch.setattr(httpx, "post", refuse)
+
+    try:
+        response = client.post("/analyze", json={"transcript": "I need a landing page."})
+        assert response.status_code == 503
+        body = response.json()
+        assert body["error"] == "ollama_unavailable"
+        assert "ollama serve" in body["detail"]
+    finally:
+        get_settings.cache_clear()
+
+
+@requires_ollama
+def test_analyze_extracts_structure_end_to_end() -> None:
+    """The real path against the real local model.
+
+    Asserts on structure and on the missing-field contract rather than on exact
+    wording, which varies between models and runs.
+    """
+    transcript = (
+        "I need a one page landing site for our developer tool. "
+        "It is aimed at senior backend engineers. "
+        "It must not use React and it has to load in under a second."
+    )
+
+    response = client.post("/analyze", json={"transcript": transcript})
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+
+    assert body["extraction"]["goal"], "goal should be extracted"
+    assert body["elapsed_s"] > 0
+    assert body["model"]
+
+    # Every reported missing field must genuinely be empty in the extraction,
+    # and must have come back normalised rather than as a literal "null".
+    from backend.analyze import is_empty
+
+    for entry in body["missing"]:
+        value = body["extraction"][entry["field"]]
+        assert is_empty(value), f"{entry['field']} reported missing but holds {value!r}"
+        assert value is None or value == [], f"{entry['field']} was not normalised"
+        assert entry["question"]
+
+    # No example was given, and the prompt is explicit that examples are
+    # usually empty, so this is the one field we can assert on reliably.
+    # (success_criteria is deliberately not asserted: a model can reasonably
+    # read "must load in under a second" as either a constraint or a criterion.)
+    assert "examples" in [m["field"] for m in body["missing"]]
