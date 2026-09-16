@@ -116,3 +116,28 @@ class AnalysisResponse(BaseModel):
     )
     model: str = Field(description="Ollama model that produced the extraction.")
     elapsed_s: float
+
+
+# ---------------------------------------------------------------------------
+# Prompt building (v0.4)
+# ---------------------------------------------------------------------------
+
+
+class BuildRequest(BaseModel):
+    """Body of ``POST /build``.
+
+    Carries the extraction as the user edited it, not as the model returned it.
+    """
+
+    extraction: Extraction
+
+
+class BuildResponse(BaseModel):
+    """The assembled prompt."""
+
+    prompt: str = Field(description="The final prompt, ready to paste.")
+    estimated_tokens: int = Field(description="Rough count: characters / 4.")
+    characters: int
+    sections: list[str] = Field(
+        default_factory=list, description="XML tags present, in order."
+    )

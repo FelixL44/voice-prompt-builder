@@ -18,10 +18,18 @@ from backend.analyze import (
     find_missing,
     ollama_available,
 )
+from backend.builder import (
+    EmptyPromptError,
+    build_prompt,
+    estimate_tokens,
+    used_sections,
+)
 from backend.config import ALLOWED_MODELS, FRONTEND_DIR, for_request, get_settings
 from backend.schemas import (
     AnalysisRequest,
     AnalysisResponse,
+    BuildRequest,
+    BuildResponse,
     ErrorResponse,
     HealthResponse,
     TranscriptionResponse,
@@ -76,6 +84,7 @@ _STATUS_BY_CODE = {
     "ollama_model_missing": 503,
     "ollama_timeout": 504,
     "invalid_extraction": 422,
+    "empty_prompt": 422,
 }
 
 
@@ -91,6 +100,7 @@ async def _typed_error_handler(
 
 app.add_exception_handler(TranscriptionError, _typed_error_handler)  # type: ignore[arg-type]
 app.add_exception_handler(AnalysisError, _typed_error_handler)  # type: ignore[arg-type]
+app.add_exception_handler(EmptyPromptError, _typed_error_handler)  # type: ignore[arg-type]
 
 
 @app.get("/health", response_model=HealthResponse)
@@ -206,6 +216,27 @@ def analyze(request: AnalysisRequest) -> AnalysisResponse:
         missing=missing,
         model=settings.ollama_model,
         elapsed_s=elapsed,
+    )
+
+
+@app.post(
+    "/build",
+    response_model=BuildResponse,
+    responses={422: {"model": ErrorResponse}},
+)
+def build(request: BuildRequest) -> BuildResponse:
+    """Assemble the final prompt from the edited fields.
+
+    Pure string assembly, no model: the same extraction always produces the
+    same prompt, so the output is reproducible and reviewable.
+    """
+    prompt = build_prompt(request.extraction)
+
+    return BuildResponse(
+        prompt=prompt,
+        estimated_tokens=estimate_tokens(prompt),
+        characters=len(prompt),
+        sections=used_sections(request.extraction),
     )
 
 
