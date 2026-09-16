@@ -145,6 +145,16 @@ All settings live in `backend/config.py` and come from `VPB_*` env vars:
   corrections in the transcript box are what gets analysed.
 - **The transcript is wrapped in `<transcript>` tags** in the prompt, so a
   brain-dump containing instructions reads as data rather than as commands.
+- **`is_empty` exists twice**: `analyze.py` judges the extraction on arrival,
+  and `isEmptyValue` in `app.js` re-judges it live as the user types. That
+  duplication is deliberate (no round-trip per keystroke) and guarded by
+  `tests/test_frontend_parity.py`, which runs both implementations over the
+  same cases via node and compares. Change one, change the other.
+- **`tests/test_frontend_parity.py` also checks every `getElementById` in
+  app.js resolves to an id in index.html.** A typo there yields a control that
+  silently does nothing -- which is how the model dropdown once shipped empty.
+- **The edited fields in the DOM are the source of truth for v0.4**, via
+  `readExtraction()`. The server holds no session state.
 - **The model name is allow-listed** (`ALLOWED_MODELS`) because the per-request
   override reaches the Hugging Face hub; it must never be free-form.
 - **Code, not the model, decides what is missing** in v0.3 (null/empty fields).
@@ -159,7 +169,10 @@ All settings live in `backend/config.py` and come from `VPB_*` env vars:
   recording, upload, editing, live word count, copy and mic-denial all work.
 - **v0.2 - done.** `/analyze` with Ollama structured output (`format` + JSON
   schema from `Extraction`), field view plus a raw-JSON panel in the UI.
-- v0.3 - question loop, at most 1-2 rounds, every question skippable.
+- **v0.3 - done.** Rather than a separate question loop, every field is
+  editable inline and a missing field shows its question as the placeholder.
+  Same intent, fewer steps, and it also lets the user fix what the model
+  paraphrased badly.
 - v0.4 - deterministic template builder, copy button, token estimate
   (chars / 4). Completes v0.
 - v1 - voice answers, URL detection with fetched summaries, target-model

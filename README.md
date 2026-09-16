@@ -13,9 +13,9 @@ Thinking out loud is easy; writing a good prompt is not. This bridges the two.
 
 ## Status
 
-**v0.2** &mdash; record or upload audio, transcribe it locally, edit the transcript,
-and extract it into structured fields with a local LLM. The question loop and
-prompt builder are on the roadmap below.
+**v0.3** &mdash; record or upload audio, transcribe it locally, edit the transcript,
+extract it into structured fields with a local LLM, and edit those fields by
+hand. The prompt builder is on the roadmap below.
 
 ## Requirements
 
@@ -190,6 +190,20 @@ Expect **20&ndash;90 seconds** depending on transcript length. A larger model su
 as `qwen2.5:7b` follows the "do not invent" instruction more reliably, at
 roughly double the time.
 
+## Filling the gaps (v0.3)
+
+Every extracted field is editable in the UI, not only the empty ones: the model
+paraphrases, and you are the authority on what you meant.
+
+Fields the backend reported missing show **the follow-up question as the
+placeholder**, so answering is just typing and skipping is just leaving it
+blank. List fields (constraints, examples, success criteria) take one item per
+line, and pasted bullets (`-`, `*`, `•`) are stripped automatically.
+
+The status line and the raw-JSON panel update as you type, so what you see is
+exactly what the prompt builder will receive. Re-running the analysis asks
+first, since it replaces every field.
+
 ## Privacy
 
 - Audio is converted and transcribed in a per-request temp directory that is
@@ -213,8 +227,9 @@ machines without `say` or `ffmpeg`.
 - [x] **v0.1** &mdash; recording page, `/transcribe`, editable transcript
 - [x] **v0.2** &mdash; `/analyze`: Ollama extracts the transcript into a fixed JSON
       schema using structured output
-- [ ] **v0.3** &mdash; follow-up questions for whatever is missing, at most two
-      rounds, every one skippable
+- [x] **v0.3** &mdash; every extracted field is editable, with the follow-up
+      question shown in place for anything missing, and skipping is just
+      leaving it blank
 - [ ] **v0.4** &mdash; deterministic template assembles the final prompt with
       XML-style sections, copy button, token estimate
 - [ ] **v1** &mdash; voice answers to follow-ups, URL detection with fetched
