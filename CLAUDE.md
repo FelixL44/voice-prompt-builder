@@ -59,7 +59,7 @@ backend/
   schemas.py     Pydantic models (API contract)
   config.py      env-var settings, all VPB_* prefixed
   prompts/       system prompts as .md files (v0.2+)
-  analyze.py     Ollama extraction            (v0.2, not yet written)
+  analyze.py     Ollama extraction + missing-field detection
   builder.py     deterministic prompt template (v0.4, not yet written)
 frontend/        index.html, app.js, style.css
 tests/
@@ -81,7 +81,9 @@ Then open http://127.0.0.1:8000.
 All settings live in `backend/config.py` and come from `VPB_*` env vars:
 `VPB_WHISPER_MODEL` (default `base`), `VPB_COMPUTE_TYPE` (`int8`),
 `VPB_LANGUAGE` (auto-detect if unset), `VPB_VAD_FILTER`, `VPB_BEAM_SIZE`,
-`VPB_MAX_UPLOAD_BYTES`, `VPB_FFMPEG_PATH`, `VPB_TMP_DIR`.
+`VPB_MAX_UPLOAD_BYTES`, `VPB_FFMPEG_PATH`, `VPB_TMP_DIR`, `VPB_OLLAMA_MODEL`
+(default `llama3.2:3b`), `VPB_OLLAMA_URL`, `VPB_OLLAMA_TIMEOUT_S`,
+`VPB_OLLAMA_NUM_CTX`.
 
 `get_settings()` is `lru_cache`d, so tests that change the env must call
 `get_settings.cache_clear()`.
@@ -127,6 +129,22 @@ All settings live in `backend/config.py` and come from `VPB_*` env vars:
 - **The vocabulary field is for terms, not prose.** Sentences there bias the
   decoder towards continuing them; the UI warns past ~40 words and the backend
   truncates at `MAX_VOCABULARY_CHARS`.
+- **Small models lie about absence, so absence is computed in code.**
+  `find_missing()` decides what is empty; the model is never asked what it
+  failed to find, because one that invented an answer will not report it.
+- **`llama3.2:3b` emits the *string* `"null"`, not JSON `null`**, even under a
+  schema that permits null. `NULL_STRINGS` + `normalize()` in `analyze.py`
+  convert those to real absence before anything downstream sees them. Without
+  it the question loop goes quiet and v0.4 would print "null" into the prompt.
+  If extraction regresses, check this first.
+- **The 3B model still over-fills `success_criteria` and `examples`** with
+  restatements of the goal, despite the prompt saying not to. `qwen2.5:7b`
+  follows the instruction better at roughly double the runtime. The prompt's
+  anti-invention rules are load-bearing -- weakening them makes this worse.
+- **The transcript is sent to `/analyze` as JSON, not as audio**, so the user's
+  corrections in the transcript box are what gets analysed.
+- **The transcript is wrapped in `<transcript>` tags** in the prompt, so a
+  brain-dump containing instructions reads as data rather than as commands.
 - **The model name is allow-listed** (`ALLOWED_MODELS`) because the per-request
   override reaches the Hugging Face hub; it must never be free-form.
 - **Code, not the model, decides what is missing** in v0.3 (null/empty fields).
@@ -139,8 +157,8 @@ All settings live in `backend/config.py` and come from `VPB_*` env vars:
 - **v0.1 - done.** Recording page, `/transcribe`, editable transcript, plus a
   model selector and vocabulary hint for accuracy. Verified by the user:
   recording, upload, editing, live word count, copy and mic-denial all work.
-- v0.2 - `/analyze` with Ollama structured output (`format` + JSON schema from
-  Pydantic), shown raw in the UI.
+- **v0.2 - done.** `/analyze` with Ollama structured output (`format` + JSON
+  schema from `Extraction`), field view plus a raw-JSON panel in the UI.
 - v0.3 - question loop, at most 1-2 rounds, every question skippable.
 - v0.4 - deterministic template builder, copy button, token estimate
   (chars / 4). Completes v0.

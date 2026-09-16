@@ -13,15 +13,16 @@ Thinking out loud is easy; writing a good prompt is not. This bridges the two.
 
 ## Status
 
-**v0.1** &mdash; record or upload audio, transcribe it locally, edit the transcript.
-The analysis and prompt-building steps are on the roadmap below.
+**v0.2** &mdash; record or upload audio, transcribe it locally, edit the transcript,
+and extract it into structured fields with a local LLM. The question loop and
+prompt builder are on the roadmap below.
 
 ## Requirements
 
 - macOS (built and tested on an **Intel / x86_64** Mac, CPU only)
 - Python 3.11+ &mdash; [`uv`](https://docs.astral.sh/uv/) manages this for you
 - `ffmpeg`
-- [Ollama](https://ollama.com) &mdash; not needed until v0.2
+- [Ollama](https://ollama.com), running, with a small model pulled
 
 Deliberately **no PyTorch or TensorFlow**. Transcription runs on
 [faster-whisper](https://github.com/SYSTRAN/faster-whisper) via CTranslate2,
@@ -34,6 +35,10 @@ builds are no longer published.
 brew install ffmpeg
 git clone <your-repo-url> && cd voice-prompt-builder
 uv sync
+
+# For the analysis step
+ollama pull llama3.2:3b
+ollama serve          # or just launch the Ollama app
 ```
 
 ## Run
@@ -66,6 +71,10 @@ Every setting is an environment variable:
 | `VPB_BEAM_SIZE` | `5` | Lower is faster, slightly less accurate |
 | `VPB_MAX_UPLOAD_BYTES` | `104857600` | 100 MB |
 | `VPB_FFMPEG_PATH` | `ffmpeg` | |
+| `VPB_OLLAMA_MODEL` | `llama3.2:3b` | Any pulled model; 3B&ndash;8B is the usable range |
+| `VPB_OLLAMA_URL` | `http://localhost:11434` | |
+| `VPB_OLLAMA_TIMEOUT_S` | `600` | |
+| `VPB_OLLAMA_NUM_CTX` | `8192` | Must fit transcript + system prompt |
 | `VPB_TMP_DIR` | `./tmp` | Scratch space, wiped after each request |
 
 ```bash
@@ -111,6 +120,7 @@ right.
 | `GET /` | The recording page |
 | `GET /health` | Whether `ffmpeg` is present and which model is configured |
 | `POST /transcribe` | Multipart `audio` file &rarr; transcript JSON. Optional `model` and `vocabulary` fields |
+| `POST /analyze` | `{"transcript": "..."}` &rarr; structured fields plus what is missing |
 | `GET /docs` | Interactive OpenAPI docs |
 
 ```bash
@@ -139,6 +149,47 @@ Errors come back with the same shape throughout &mdash; a machine-readable
 { "error": "ffmpeg_missing", "detail": "ffmpeg was not found on PATH. Install it with: brew install ffmpeg" }
 ```
 
+## Structuring (v0.2)
+
+`POST /analyze` sends the transcript &mdash; **as edited**, not the audio &mdash; to a
+local model via Ollama, constrained to the JSON schema of the `Extraction`
+Pydantic model using Ollama's `format` parameter. So the response is always
+parseable JSON with the right shape.
+
+Parseable is not the same as truthful, and a 3B model will fill a blank with a
+plausible guess if allowed to. Two things guard against that:
+
+- The system prompt ([`backend/prompts/extract.md`](backend/prompts/extract.md))
+  states that empty fields are the expected answer, not a failure.
+- **Code decides what is missing**, never the model. `find_missing()` walks the
+  extraction and reports every null, blank or empty list. A model that invented
+  an answer would not report it as absent, so it is never asked to.
+
+Model stand-ins for absence are normalised first: `llama3.2:3b` writes the
+*string* `"null"` rather than emitting JSON `null`, which would otherwise look
+like a real answer and leave the question loop with nothing to ask.
+
+```json
+{
+  "extraction": {
+    "goal": "Draft a first reply for incoming tickets, for an agent to edit",
+    "audience": "Support agents",
+    "constraints": ["Cannot send automatically", "Must handle German and English"],
+    "examples": [],
+    "output_format": "Reply with confidence score"
+  },
+  "missing": [
+    { "field": "examples", "question": "Do you have an example of what good looks like?" }
+  ],
+  "model": "llama3.2:3b",
+  "elapsed_s": 21.8
+}
+```
+
+Expect **20&ndash;90 seconds** depending on transcript length. A larger model such
+as `qwen2.5:7b` follows the "do not invent" instruction more reliably, at
+roughly double the time.
+
 ## Privacy
 
 - Audio is converted and transcribed in a per-request temp directory that is
@@ -160,7 +211,7 @@ machines without `say` or `ffmpeg`.
 ## Roadmap
 
 - [x] **v0.1** &mdash; recording page, `/transcribe`, editable transcript
-- [ ] **v0.2** &mdash; `/analyze`: Ollama extracts the transcript into a fixed JSON
+- [x] **v0.2** &mdash; `/analyze`: Ollama extracts the transcript into a fixed JSON
       schema using structured output
 - [ ] **v0.3** &mdash; follow-up questions for whatever is missing, at most two
       rounds, every one skippable
