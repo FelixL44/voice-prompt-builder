@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Voice Prompt Builder</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <main class="app">
+    <header class="header">
+      <h1>Voice Prompt Builder</h1>
+      <p class="tagline">Fully local &mdash; your voice never leaves your machine.</p>
+    </header>
+
+    <div id="banner" class="banner" hidden></div>
+
+    <section class="card" aria-labelledby="record-heading">
+      <h2 id="record-heading">1. Record</h2>
+
+      <div class="recorder">
+        <button id="recordBtn" class="btn btn-record" type="button">
+          <span class="dot" aria-hidden="true"></span>
+          <span id="recordLabel">Start recording</span>
+        </button>
+        <div class="timer" id="timer" role="timer" aria-live="off">00:00</div>
+      </div>
+
+      <div class="meter" aria-hidden="true">
+        <div class="meter-fill" id="meterFill"></div>
+      </div>
+      <p class="hint" id="recorderHint">Up to 5 minutes. Just ramble &mdash; you can fix the text afterwards.</p>
+
+      <details class="tuning" id="tuning">
+        <summary>Accuracy settings</summary>
+
+        <div class="field">
+          <label for="modelSelect">Model</label>
+          <select id="modelSelect"></select>
+          <span class="hint" id="modelHint"></span>
+        </div>
+
+        <div class="field">
+          <label for="vocabulary">Names &amp; jargon</label>
+          <textarea id="vocabulary" rows="2"
+            placeholder="Kubernetes, Pydantic, Ollama, ACME Corp, Felix"></textarea>
+          <span class="hint" id="vocabHint">
+            Comma-separated <strong>terms</strong>, not sentences. Free &mdash; costs no extra time.
+          </span>
+        </div>
+      </details>
+
+      <div class="divider"><span>or</span></div>
+
+      <div class="upload">
+        <label class="btn btn-secondary" for="fileInput">Choose an audio file</label>
+        <input id="fileInput" type="file" accept="audio/*" hidden>
+        <span class="hint" id="fileName"></span>
+      </div>
+    </section>
+
+    <section class="card" id="statusCard" hidden aria-live="polite">
+      <div class="status">
+        <span class="spinner" id="spinner" aria-hidden="true"></span>
+        <span id="statusText">Transcribing&hellip;</span>
+      </div>
+      <p class="hint" id="statusHint"></p>
+    </section>
+
+    <section class="card" id="resultCard" hidden aria-labelledby="transcript-heading">
+      <div class="result-head">
+        <h2 id="transcript-heading">2. Transcript</h2>
+        <span class="meta" id="resultMeta"></span>
+      </div>
+      <p class="hint">Editable &mdash; fix any misheard words before the next step.</p>
+      <textarea id="transcript" class="transcript" spellcheck="true"
+                aria-label="Editable transcript"></textarea>
+      <div class="result-foot">
+        <span class="meta" id="charCount"></span>
+        <button id="copyBtn" class="btn btn-secondary" type="button">Copy</button>
+      </div>
+    </section>
+
+    <footer class="footer">
+      <span id="healthInfo">&nbsp;</span>
+    </footer>
+  </main>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
