@@ -40,6 +40,13 @@ const el = {
   rawJson: document.getElementById("rawJson"),
   fieldStatus: document.getElementById("fieldStatus"),
   copyJsonBtn: document.getElementById("copyJsonBtn"),
+  buildCard: document.getElementById("buildCard"),
+  buildBtn: document.getElementById("buildBtn"),
+  buildMeta: document.getElementById("buildMeta"),
+  buildResult: document.getElementById("buildResult"),
+  promptOutput: document.getElementById("promptOutput"),
+  promptStats: document.getElementById("promptStats"),
+  copyPromptBtn: document.getElementById("copyPromptBtn"),
 };
 
 /**
@@ -587,6 +594,12 @@ function refreshAnalysisState() {
       : `${filled} of ${total} fields filled \u00b7 blanks are fine, they are simply left out`;
 
   el.rawJson.textContent = JSON.stringify(extraction, null, 2);
+
+  // A prompt built before this edit no longer matches the fields above.
+  if (!el.buildResult.hidden) {
+    el.buildMeta.textContent = "out of date \u2014 rebuild";
+    el.buildMeta.classList.add("stale");
+  }
   return extraction;
 }
 
@@ -613,6 +626,7 @@ function showAnalysis(payload) {
 
   el.analyzeMeta.textContent = `${payload.elapsed_s}s \u00b7 ${payload.model}`;
   el.analyzeResult.hidden = false;
+  el.buildCard.hidden = false;
 
   refreshAnalysisState();
   // Size the boxes once they are laid out, not while still hidden.
@@ -673,5 +687,61 @@ el.copyJsonBtn.addEventListener("click", async () => {
     setTimeout(() => (el.copyJsonBtn.textContent = "Copy JSON"), 1400);
   } catch {
     showBanner("Could not copy to the clipboard.", "warn");
+  }
+});
+
+
+// ---------------------------------------------------------------------------
+// Prompt building
+// ---------------------------------------------------------------------------
+
+el.buildBtn.addEventListener("click", async () => {
+  clearBanner();
+  el.buildBtn.disabled = true;
+
+  try {
+    const response = await fetch("/build", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ extraction: readExtraction() }),
+    });
+    const payload = await response.json().catch(() => null);
+
+    if (!response.ok) {
+      showBanner(payload?.detail || `Could not build the prompt (${response.status}).`);
+      return;
+    }
+    showPrompt(payload);
+  } catch (err) {
+    showBanner(`Could not reach the backend: ${err.message}`);
+  } finally {
+    el.buildBtn.disabled = false;
+  }
+});
+
+function showPrompt(payload) {
+  el.promptOutput.textContent = payload.prompt;
+  el.promptStats.textContent =
+    `~${payload.estimated_tokens} tokens \u00b7 ${payload.characters} characters ` +
+    `\u00b7 ${payload.sections.length} sections`;
+
+  el.buildMeta.textContent = payload.sections.join(", ");
+  el.buildMeta.classList.remove("stale");
+  el.buildResult.hidden = false;
+  el.buildBtn.textContent = "Rebuild prompt";
+}
+
+el.copyPromptBtn.addEventListener("click", async () => {
+  try {
+    await navigator.clipboard.writeText(el.promptOutput.textContent);
+    el.copyPromptBtn.textContent = "Copied";
+    setTimeout(() => (el.copyPromptBtn.textContent = "Copy prompt"), 1400);
+  } catch {
+    // Clipboard needs a secure context; select the text so Cmd+C still works.
+    const range = document.createRange();
+    range.selectNodeContents(el.promptOutput);
+    window.getSelection().removeAllRanges();
+    window.getSelection().addRange(range);
+    showBanner("Could not copy automatically \u2014 the prompt is selected instead.", "warn");
   }
 });

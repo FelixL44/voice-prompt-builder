@@ -108,6 +108,26 @@
       </div>
     </section>
 
+    <section class="card" id="buildCard" hidden aria-labelledby="build-heading">
+      <div class="result-head">
+        <h2 id="build-heading">4. Prompt</h2>
+        <span class="meta" id="buildMeta"></span>
+      </div>
+      <p class="hint">
+        Assembled by a fixed template, not by a model &mdash; the same fields
+        always produce the same prompt.
+      </p>
+      <button id="buildBtn" class="btn btn-primary" type="button">Build prompt</button>
+
+      <div id="buildResult" hidden>
+        <pre class="prompt-output" id="promptOutput"></pre>
+        <div class="result-foot">
+          <span class="meta" id="promptStats"></span>
+          <button id="copyPromptBtn" class="btn btn-primary" type="button">Copy prompt</button>
+        </div>
+      </div>
+    </section>
+
     <footer class="footer">
       <span id="healthInfo">&nbsp;</span>
     </footer>
