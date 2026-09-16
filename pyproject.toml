@@ -1,0 +1,29 @@
+[project]
+name = "voice-prompt-builder"
+version = "0.1.0"
+description = "Turn a spoken brain-dump into a structured, prompt-engineered prompt. Fully local."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "python-multipart>=0.0.12",
+    "faster-whisper>=1.1",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "httpx>=0.28",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+filterwarnings = ["ignore::DeprecationWarning"]
+
+# Intel Macs (x86_64) are a shrinking target: recent onnxruntime releases ship
+# arm64-only macOS wheels. Declaring this environment as required forces uv to
+# resolve to versions that actually have x86_64 macOS wheels, instead of
+# resolving universally and failing at install time.
+[tool.uv]
+required-environments = ["sys_platform == 'darwin' and platform_machine == 'x86_64'"]
