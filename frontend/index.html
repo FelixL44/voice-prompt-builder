@@ -81,6 +81,27 @@
       </div>
     </section>
 
+    <section class="card" id="analyzeCard" hidden aria-labelledby="analyze-heading">
+      <div class="result-head">
+        <h2 id="analyze-heading">3. Structure</h2>
+        <span class="meta" id="analyzeMeta"></span>
+      </div>
+      <p class="hint">
+        The local model sorts your brain-dump into fields. Empty fields are
+        expected &mdash; v0.3 will ask about them.
+      </p>
+      <button id="analyzeBtn" class="btn btn-primary" type="button">Analyze transcript</button>
+
+      <div id="analyzeResult" hidden>
+        <ul class="fields" id="fieldList"></ul>
+
+        <details class="raw">
+          <summary>Raw JSON</summary>
+          <pre id="rawJson"></pre>
+        </details>
+      </div>
+    </section>
+
     <footer class="footer">
       <span id="healthInfo">&nbsp;</span>
     </footer>

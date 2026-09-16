@@ -32,6 +32,23 @@ const el = {
   modelHint: document.getElementById("modelHint"),
   vocabulary: document.getElementById("vocabulary"),
   vocabHint: document.getElementById("vocabHint"),
+  analyzeCard: document.getElementById("analyzeCard"),
+  analyzeBtn: document.getElementById("analyzeBtn"),
+  analyzeMeta: document.getElementById("analyzeMeta"),
+  analyzeResult: document.getElementById("analyzeResult"),
+  fieldList: document.getElementById("fieldList"),
+  rawJson: document.getElementById("rawJson"),
+};
+
+/** Field order and labels for the structure view. */
+const FIELD_LABELS = {
+  goal: "Goal",
+  audience: "Audience",
+  context: "Context",
+  constraints: "Constraints",
+  examples: "Examples",
+  output_format: "Output format",
+  success_criteria: "Success criteria",
 };
 
 /** Mirrors MAX_VOCABULARY_CHARS in backend/config.py. */
@@ -323,6 +340,9 @@ function showResult(payload) {
     `${formatTime(payload.duration)} audio · ${payload.elapsed_s}s ` +
     `· ${payload.model} · ${payload.language}`;
   el.resultCard.hidden = false;
+  el.analyzeCard.hidden = false;
+  el.analyzeResult.hidden = true; // Stale structure would mislead.
+  el.analyzeMeta.textContent = "";
   updateCharCount();
   el.transcript.focus();
 }
@@ -462,3 +482,100 @@ el.vocabulary.addEventListener("input", updateVocabHint);
 // then let /health refine it with which models are already warm.
 populateModels();
 checkHealth();
+
+
+// ---------------------------------------------------------------------------
+// Analysis
+// ---------------------------------------------------------------------------
+
+/** Render one extracted value, which may be a string, a list, or empty. */
+function renderValue(value) {
+  const cell = document.createElement("div");
+  cell.className = "field-value";
+
+  if (Array.isArray(value) && value.length > 0) {
+    const list = document.createElement("ul");
+    for (const item of value) {
+      const entry = document.createElement("li");
+      entry.textContent = item;
+      list.append(entry);
+    }
+    cell.append(list);
+  } else {
+    cell.textContent = value;
+  }
+  return cell;
+}
+
+/** Show the extraction, marking empty fields with the question to be asked. */
+function showAnalysis(payload) {
+  const missingByField = new Map(payload.missing.map((m) => [m.field, m.question]));
+
+  el.fieldList.innerHTML = "";
+  for (const [name, label] of Object.entries(FIELD_LABELS)) {
+    const row = document.createElement("li");
+
+    const nameCell = document.createElement("div");
+    nameCell.className = "field-name";
+    nameCell.textContent = label;
+    row.append(nameCell);
+
+    if (missingByField.has(name)) {
+      const cell = document.createElement("div");
+      cell.className = "field-value field-missing";
+      cell.textContent = "not mentioned";
+      const ask = document.createElement("span");
+      ask.className = "ask";
+      ask.textContent = missingByField.get(name);
+      cell.append(ask);
+      row.append(cell);
+    } else {
+      row.append(renderValue(payload.extraction[name]));
+    }
+    el.fieldList.append(row);
+  }
+
+  el.rawJson.textContent = JSON.stringify(payload.extraction, null, 2);
+  el.analyzeMeta.textContent =
+    `${payload.elapsed_s}s \u00b7 ${payload.model} \u00b7 ` +
+    `${payload.missing.length} field(s) missing`;
+  el.analyzeResult.hidden = false;
+}
+
+el.analyzeBtn.addEventListener("click", async () => {
+  const transcript = el.transcript.value.trim();
+  if (!transcript) {
+    showBanner("There is no transcript to analyse yet.", "warn");
+    return;
+  }
+
+  clearBanner();
+  el.analyzeBtn.disabled = true;
+  el.analyzeBtn.textContent = "Analyzing\u2026";
+  setStatus(
+    "Extracting structure\u2026",
+    "The local model reads the whole transcript. Expect one to two minutes " +
+    "for a long recording on a CPU."
+  );
+
+  try {
+    const response = await fetch("/analyze", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ transcript }),
+    });
+    const payload = await response.json().catch(() => null);
+
+    if (!response.ok) {
+      showBanner(payload?.detail || `Analysis failed (${response.status}).`);
+      return;
+    }
+    showAnalysis(payload);
+  } catch (err) {
+    showBanner(`Could not reach the backend: ${err.message}`);
+  } finally {
+    hideStatus();
+    el.analyzeBtn.disabled = false;
+    el.analyzeBtn.textContent = "Analyze transcript";
+  }
+});
