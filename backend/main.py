@@ -12,8 +12,20 @@ from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
+from backend.analyze import (
+    AnalysisError,
+    analyze_transcript,
+    find_missing,
+    ollama_available,
+)
 from backend.config import ALLOWED_MODELS, FRONTEND_DIR, for_request, get_settings
-from backend.schemas import ErrorResponse, HealthResponse, TranscriptionResponse
+from backend.schemas import (
+    AnalysisRequest,
+    AnalysisResponse,
+    ErrorResponse,
+    HealthResponse,
+    TranscriptionResponse,
+)
 from backend.transcribe import (
     EmptyAudioError,
     FfmpegMissingError,
@@ -60,18 +72,25 @@ _STATUS_BY_CODE = {
     "model_load_failed": 503,
     "empty_audio": 422,
     "conversion_failed": 400,
+    "ollama_unavailable": 503,
+    "ollama_model_missing": 503,
+    "ollama_timeout": 504,
+    "invalid_extraction": 422,
 }
 
 
-@app.exception_handler(TranscriptionError)
-async def _transcription_error_handler(
-    _request: Request, exc: TranscriptionError
+async def _typed_error_handler(
+    _request: Request, exc: TranscriptionError | AnalysisError
 ) -> JSONResponse:
     """Turn our typed errors into readable JSON the UI can display as-is."""
     status = _STATUS_BY_CODE.get(exc.code, 500)
     logger.warning("%s (%s): %s", type(exc).__name__, exc.code, exc)
     body = ErrorResponse(error=exc.code, detail=str(exc))
     return JSONResponse(status_code=status, content=body.model_dump())
+
+
+app.add_exception_handler(TranscriptionError, _typed_error_handler)  # type: ignore[arg-type]
+app.add_exception_handler(AnalysisError, _typed_error_handler)  # type: ignore[arg-type]
 
 
 @app.get("/health", response_model=HealthResponse)
@@ -86,6 +105,8 @@ def health() -> HealthResponse:
     return HealthResponse(
         status="ok" if has_ffmpeg else "degraded",
         ffmpeg=has_ffmpeg,
+        ollama=ollama_available(settings),
+        ollama_model=settings.ollama_model,
         ffmpeg_version=ffmpeg_version(settings),
         whisper_model=settings.whisper_model,
         available_models=list(ALLOWED_MODELS),
@@ -154,6 +175,37 @@ async def transcribe(
         model=result.model,
         elapsed_s=result.elapsed_s,
         segments=result.segments,
+    )
+
+
+@app.post(
+    "/analyze",
+    response_model=AnalysisResponse,
+    responses={
+        422: {"model": ErrorResponse},
+        503: {"model": ErrorResponse},
+        504: {"model": ErrorResponse},
+    },
+)
+def analyze(request: AnalysisRequest) -> AnalysisResponse:
+    """Extract a transcript into structured fields with the local LLM.
+
+    The transcript arrives as JSON rather than as the recording, so the user's
+    edits in the transcript box are what gets analysed.
+    """
+    settings = get_settings()
+    extraction, elapsed = analyze_transcript(request.transcript, settings)
+
+    # Missing fields are computed here, from the extraction -- the model is
+    # never asked what it failed to find.
+    missing = find_missing(extraction)
+    logger.info("Extraction complete, %d field(s) missing", len(missing))
+
+    return AnalysisResponse(
+        extraction=extraction,
+        missing=missing,
+        model=settings.ollama_model,
+        elapsed_s=elapsed,
     )
 
 

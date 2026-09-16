@@ -9,6 +9,7 @@ dependencies = [
     "uvicorn[standard]>=0.32",
     "python-multipart>=0.0.12",
     "faster-whisper>=1.1",
+    "httpx>=0.28.1",
 ]
 
 [dependency-groups]

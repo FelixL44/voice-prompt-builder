@@ -44,6 +44,8 @@ class HealthResponse(BaseModel):
     model_loaded: bool = Field(
         description="False until the first transcription warms the model cache."
     )
+    ollama: bool = Field(default=False, description="Whether Ollama is reachable.")
+    ollama_model: str = Field(default="", description="Configured extraction model.")
 
 
 class ErrorResponse(BaseModel):
@@ -51,3 +53,66 @@ class ErrorResponse(BaseModel):
 
     error: str = Field(description="Machine-readable error code.")
     detail: str = Field(description="Human-readable message, safe to show in the UI.")
+
+
+# ---------------------------------------------------------------------------
+# Analysis (v0.2)
+# ---------------------------------------------------------------------------
+
+
+class Extraction(BaseModel):
+    """The structured form of a brain-dump.
+
+    This model is the contract with the local LLM: its JSON schema is handed to
+    Ollama's ``format`` parameter, so the field names and types here are what
+    the model is constrained to produce.
+
+    Every field is optional by design. An empty field is a real answer meaning
+    "the speaker did not say", and the question loop in v0.3 depends on that
+    being honest rather than filled in with a guess.
+    """
+
+    goal: str | None = Field(default=None, description="What they want to happen.")
+    audience: str | None = Field(default=None, description="Who the output is for.")
+    context: str | None = Field(default=None, description="Background the model needs.")
+    constraints: list[str] = Field(
+        default_factory=list, description="Hard limits: budget, stack, tone, length."
+    )
+    examples: list[str] = Field(
+        default_factory=list, description="Concrete samples the speaker gave."
+    )
+    output_format: str | None = Field(
+        default=None, description="Shape of the deliverable: email, JSON, table."
+    )
+    success_criteria: list[str] = Field(
+        default_factory=list, description="How they would know it worked."
+    )
+
+
+class AnalysisRequest(BaseModel):
+    """Body of ``POST /analyze``.
+
+    Takes the transcript rather than the audio, so whatever the user corrected
+    in the transcript box is what gets analysed.
+    """
+
+    transcript: str = Field(min_length=1, description="The (possibly edited) transcript.")
+
+
+class MissingField(BaseModel):
+    """One empty field, with the question the UI should ask about it."""
+
+    field: str
+    question: str
+
+
+class AnalysisResponse(BaseModel):
+    """Result of ``POST /analyze``."""
+
+    extraction: Extraction
+    missing: list[MissingField] = Field(
+        default_factory=list,
+        description="Empty fields, determined by code rather than by the model.",
+    )
+    model: str = Field(description="Ollama model that produced the extraction.")
+    elapsed_s: float

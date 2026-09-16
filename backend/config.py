@@ -62,6 +62,21 @@ class Settings:
 
     tmp_dir: Path = PROJECT_ROOT / "tmp"
 
+    # --- Ollama (v0.2) ---
+
+    ollama_url: str = "http://localhost:11434"
+
+    ollama_model: str = "llama3.2:3b"
+    """Small on purpose: this runs on CPU. 3B-8B is the usable range."""
+
+    ollama_timeout_s: int = 600
+    """Generous: a 5-minute transcript takes 1-2 minutes on a CPU-only Mac."""
+
+    ollama_num_ctx: int = 8192
+    """Must fit the transcript plus the system prompt. ~750 words per 5 min."""
+
+    prompts_dir: Path = PROJECT_ROOT / "backend" / "prompts"
+
 
 def _env_str(name: str, default: str) -> str:
     return os.environ.get(name, default).strip() or default
@@ -100,6 +115,10 @@ def get_settings() -> Settings:
         ffmpeg_path=_env_str("VPB_FFMPEG_PATH", "ffmpeg"),
         ffmpeg_timeout_s=_env_int("VPB_FFMPEG_TIMEOUT_S", 120),
         tmp_dir=Path(_env_str("VPB_TMP_DIR", str(PROJECT_ROOT / "tmp"))),
+        ollama_url=_env_str("VPB_OLLAMA_URL", "http://localhost:11434").rstrip("/"),
+        ollama_model=_env_str("VPB_OLLAMA_MODEL", "llama3.2:3b"),
+        ollama_timeout_s=_env_int("VPB_OLLAMA_TIMEOUT_S", 600),
+        ollama_num_ctx=_env_int("VPB_OLLAMA_NUM_CTX", 8192),
     )
 
 
