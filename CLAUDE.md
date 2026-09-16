@@ -155,6 +155,16 @@ All settings live in `backend/config.py` and come from `VPB_*` env vars:
   silently does nothing -- which is how the model dropdown once shipped empty.
 - **The edited fields in the DOM are the source of truth for v0.4**, via
   `readExtraction()`. The server holds no session state.
+- **`getUserMedia({ audio: true })` is intentional -- do not "fix" it.** That
+  bare constraint lets the browser apply its voice-call DSP (confirmed live:
+  `noiseSuppression`, `autoGainControl` and `echoCancellation` all true), which
+  is tuned for phone calls rather than for ASR. Measured on this project:
+  Opus bitrate makes no difference to accuracy at all (identical error from
+  64k down to 12k), while background noise roughly doubles it. The laptop mic
+  is far-field, so uploads from a phone transcribe noticeably better.
+  The user considered disabling the DSP and **chose to leave it**, because in a
+  genuinely noisy room the suppression may be helping, and nothing here proves
+  otherwise. Revisit only with an A/B recording of the same words.
 - **The model name is allow-listed** (`ALLOWED_MODELS`) because the per-request
   override reaches the Hugging Face hub; it must never be free-form.
 - **Code, not the model, decides what is missing** in v0.3 (null/empty fields).
