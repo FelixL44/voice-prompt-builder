@@ -261,12 +261,28 @@ select:focus, .field textarea:focus { outline: none; border-color: var(--accent)
 }
 .fields li:last-child { border-bottom: 1px solid var(--border); }
 
-.field-name { color: var(--muted); font-size: 13px; }
-.field-value ul { margin: 0; padding-left: 18px; }
-.field-value li { display: block; border: none; padding: 2px 0; }
+.fields li { align-items: start; }
+.field-name { color: var(--muted); font-size: 13px; padding-top: 9px; }
 
-.field-missing { color: var(--warn); font-style: italic; }
-.field-missing .ask { display: block; color: var(--muted); font-style: normal; font-size: 13px; }
+.field-input {
+  font: inherit;
+  width: 100%;
+  padding: 8px 10px;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  line-height: 1.5;
+  resize: vertical;
+  overflow: hidden;
+}
+.field-input:focus { outline: none; border-color: var(--accent); overflow: auto; }
+.field-input::placeholder { color: var(--muted); font-style: italic; }
+
+/* An empty field is a prompt to answer, not an error. */
+.fields li.is-missing .field-input { border-color: rgba(210, 153, 34, 0.55); }
+.fields li.is-missing .field-name { color: var(--warn); }
+.fields li.is-missing .field-input:focus { border-color: var(--accent); }
 
 .raw { margin-top: 16px; }
 .raw summary {

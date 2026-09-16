@@ -38,18 +38,43 @@ const el = {
   analyzeResult: document.getElementById("analyzeResult"),
   fieldList: document.getElementById("fieldList"),
   rawJson: document.getElementById("rawJson"),
+  fieldStatus: document.getElementById("fieldStatus"),
+  copyJsonBtn: document.getElementById("copyJsonBtn"),
 };
 
-/** Field order and labels for the structure view. */
-const FIELD_LABELS = {
-  goal: "Goal",
-  audience: "Audience",
-  context: "Context",
-  constraints: "Constraints",
-  examples: "Examples",
-  output_format: "Output format",
-  success_criteria: "Success criteria",
+/**
+ * Field order, labels, and whether each holds a list.
+ * List fields are edited as one item per line.
+ */
+const FIELDS = {
+  goal: { label: "Goal", list: false },
+  audience: { label: "Audience", list: false },
+  context: { label: "Context", list: false },
+  constraints: { label: "Constraints", list: true },
+  examples: { label: "Examples", list: true },
+  output_format: { label: "Output format", list: false },
+  success_criteria: { label: "Success criteria", list: true },
 };
+
+/**
+ * Mirrors NULL_STRINGS in backend/analyze.py.
+ *
+ * The backend decides what is missing on arrival; once the user starts
+ * editing, the browser has to make the same judgement live. A test asserts
+ * these two lists stay identical.
+ */
+const NULL_STRINGS = new Set([
+  "null", "none", "nil", "n/a", "na", "-", "--", "",
+  "unknown", "unspecified", "not specified", "not mentioned",
+  "not stated", "not provided", "not applicable", "no information",
+]);
+
+/** Mirrors is_empty() in backend/analyze.py. */
+function isEmptyValue(value) {
+  if (value === null || value === undefined) return true;
+  if (Array.isArray(value)) return value.every(isEmptyValue);
+  return NULL_STRINGS.has(String(value).trim().toLowerCase().replace(/\.+$/, ""));
+}
 
 /** Mirrors MAX_VOCABULARY_CHARS in backend/config.py. */
 const MAX_VOCABULARY_CHARS = 600;
@@ -488,58 +513,110 @@ checkHealth();
 // Analysis
 // ---------------------------------------------------------------------------
 
-/** Render one extracted value, which may be a string, a list, or empty. */
-function renderValue(value) {
-  const cell = document.createElement("div");
-  cell.className = "field-value";
+/**
+ * Build the editable control for one field.
+ *
+ * Every field is editable, not just the empty ones: the model paraphrases, and
+ * the user is the authority on what they meant. For a field the backend
+ * reported missing, the question becomes the placeholder -- answering it is
+ * just typing, and skipping it is just leaving it blank.
+ */
+function buildFieldInput(name, value, question) {
+  const spec = FIELDS[name];
+  const input = document.createElement("textarea");
 
-  if (Array.isArray(value) && value.length > 0) {
-    const list = document.createElement("ul");
-    for (const item of value) {
-      const entry = document.createElement("li");
-      entry.textContent = item;
-      list.append(entry);
-    }
-    cell.append(list);
-  } else {
-    cell.textContent = value;
-  }
-  return cell;
+  input.className = "field-input";
+  input.dataset.field = name;
+  input.rows = spec.list ? 3 : 2;
+  input.value = spec.list ? (value || []).join("\n") : (value ?? "");
+  input.placeholder = question
+    ? question
+    : spec.list
+      ? "One per line"
+      : `Add ${spec.label.toLowerCase()}\u2026`;
+
+  input.addEventListener("input", () => {
+    autoGrow(input);
+    refreshAnalysisState();
+  });
+  return input;
 }
 
-/** Show the extraction, marking empty fields with the question to be asked. */
+/** Keep a textarea tall enough for its content, so nothing is hidden. */
+function autoGrow(input) {
+  input.style.height = "auto";
+  input.style.height = `${Math.min(input.scrollHeight, 260)}px`;
+}
+
+/** Read the edited fields back out of the DOM. The source of truth for v0.4. */
+function readExtraction() {
+  const extraction = {};
+  for (const [name, spec] of Object.entries(FIELDS)) {
+    const input = el.fieldList.querySelector(`[data-field="${name}"]`);
+    const raw = input ? input.value : "";
+
+    if (spec.list) {
+      extraction[name] = raw
+        .split("\n")
+        .map((line) => line.replace(/^[-*\u2022]\s*/, "").trim())
+        .filter((line) => !isEmptyValue(line));
+    } else {
+      extraction[name] = isEmptyValue(raw) ? null : raw.trim();
+    }
+  }
+  return extraction;
+}
+
+/** Re-evaluate what is still missing after an edit, and update the UI. */
+function refreshAnalysisState() {
+  const extraction = readExtraction();
+  let filled = 0;
+
+  for (const name of Object.keys(FIELDS)) {
+    const empty = isEmptyValue(extraction[name]);
+    if (!empty) filled += 1;
+
+    const row = el.fieldList.querySelector(`[data-row="${name}"]`);
+    if (row) row.classList.toggle("is-missing", empty);
+  }
+
+  const total = Object.keys(FIELDS).length;
+  el.fieldStatus.textContent =
+    filled === total
+      ? `All ${total} fields filled`
+      : `${filled} of ${total} fields filled \u00b7 blanks are fine, they are simply left out`;
+
+  el.rawJson.textContent = JSON.stringify(extraction, null, 2);
+  return extraction;
+}
+
+/** Show the extraction as an editable form. */
 function showAnalysis(payload) {
-  const missingByField = new Map(payload.missing.map((m) => [m.field, m.question]));
+  const questionFor = new Map(payload.missing.map((m) => [m.field, m.question]));
 
   el.fieldList.innerHTML = "";
-  for (const [name, label] of Object.entries(FIELD_LABELS)) {
+  for (const [name, spec] of Object.entries(FIELDS)) {
     const row = document.createElement("li");
+    row.dataset.row = name;
 
-    const nameCell = document.createElement("div");
-    nameCell.className = "field-name";
-    nameCell.textContent = label;
-    row.append(nameCell);
+    const label = document.createElement("label");
+    label.className = "field-name";
+    label.textContent = spec.label;
+    label.htmlFor = `field-${name}`;
 
-    if (missingByField.has(name)) {
-      const cell = document.createElement("div");
-      cell.className = "field-value field-missing";
-      cell.textContent = "not mentioned";
-      const ask = document.createElement("span");
-      ask.className = "ask";
-      ask.textContent = missingByField.get(name);
-      cell.append(ask);
-      row.append(cell);
-    } else {
-      row.append(renderValue(payload.extraction[name]));
-    }
+    const input = buildFieldInput(name, payload.extraction[name], questionFor.get(name));
+    input.id = `field-${name}`;
+
+    row.append(label, input);
     el.fieldList.append(row);
   }
 
-  el.rawJson.textContent = JSON.stringify(payload.extraction, null, 2);
-  el.analyzeMeta.textContent =
-    `${payload.elapsed_s}s \u00b7 ${payload.model} \u00b7 ` +
-    `${payload.missing.length} field(s) missing`;
+  el.analyzeMeta.textContent = `${payload.elapsed_s}s \u00b7 ${payload.model}`;
   el.analyzeResult.hidden = false;
+
+  refreshAnalysisState();
+  // Size the boxes once they are laid out, not while still hidden.
+  el.fieldList.querySelectorAll(".field-input").forEach(autoGrow);
 }
 
 el.analyzeBtn.addEventListener("click", async () => {
@@ -547,6 +624,14 @@ el.analyzeBtn.addEventListener("click", async () => {
   if (!transcript) {
     showBanner("There is no transcript to analyse yet.", "warn");
     return;
+  }
+
+  // Re-analysing replaces every field, so do not silently bin typed answers.
+  if (!el.analyzeResult.hidden) {
+    const confirmed = window.confirm(
+      "Re-analysing replaces all fields and discards your edits. Continue?"
+    );
+    if (!confirmed) return;
   }
 
   clearBanner();
@@ -577,5 +662,16 @@ el.analyzeBtn.addEventListener("click", async () => {
     hideStatus();
     el.analyzeBtn.disabled = false;
     el.analyzeBtn.textContent = "Analyze transcript";
+  }
+});
+
+
+el.copyJsonBtn.addEventListener("click", async () => {
+  try {
+    await navigator.clipboard.writeText(JSON.stringify(readExtraction(), null, 2));
+    el.copyJsonBtn.textContent = "Copied";
+    setTimeout(() => (el.copyJsonBtn.textContent = "Copy JSON"), 1400);
+  } catch {
+    showBanner("Could not copy to the clipboard.", "warn");
   }
 });

@@ -87,13 +87,19 @@
         <span class="meta" id="analyzeMeta"></span>
       </div>
       <p class="hint">
-        The local model sorts your brain-dump into fields. Empty fields are
-        expected &mdash; v0.3 will ask about them.
+        The local model sorts your brain-dump into fields. Everything below is
+        editable &mdash; correct what it got wrong, and fill in anything it
+        marked as missing. Blanks are fine; they are simply left out.
       </p>
       <button id="analyzeBtn" class="btn btn-primary" type="button">Analyze transcript</button>
 
       <div id="analyzeResult" hidden>
         <ul class="fields" id="fieldList"></ul>
+
+        <div class="result-foot">
+          <span class="meta" id="fieldStatus"></span>
+          <button id="copyJsonBtn" class="btn btn-secondary" type="button">Copy JSON</button>
+        </div>
 
         <details class="raw">
           <summary>Raw JSON</summary>
