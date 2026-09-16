@@ -13,9 +13,9 @@ Thinking out loud is easy; writing a good prompt is not. This bridges the two.
 
 ## Status
 
-**v0.3** &mdash; record or upload audio, transcribe it locally, edit the transcript,
-extract it into structured fields with a local LLM, and edit those fields by
-hand. The prompt builder is on the roadmap below.
+**v0 complete** &mdash; record or upload audio, transcribe it locally, edit the
+transcript, extract it into structured fields with a local LLM, edit those
+fields, and assemble the final prompt. All of it on your own machine.
 
 ## Requirements
 
@@ -121,6 +121,7 @@ right.
 | `GET /health` | Whether `ffmpeg` is present and which model is configured |
 | `POST /transcribe` | Multipart `audio` file &rarr; transcript JSON. Optional `model` and `vocabulary` fields |
 | `POST /analyze` | `{"transcript": "..."}` &rarr; structured fields plus what is missing |
+| `POST /build` | `{"extraction": {...}}` &rarr; the assembled prompt |
 | `GET /docs` | Interactive OpenAPI docs |
 
 ```bash
@@ -204,6 +205,32 @@ The status line and the raw-JSON panel update as you type, so what you see is
 exactly what the prompt builder will receive. Re-running the analysis asks
 first, since it replaces every field.
 
+## Building the prompt (v0.4)
+
+`POST /build` assembles the final prompt from the edited fields. **No model is
+involved.** The extraction is already structured, so turning it into a prompt is
+string assembly: instant, reproducible, and diffable. The same fields always
+produce byte-identical output, which a model could never promise.
+
+Sections are XML-style, and empty ones are omitted rather than left blank &mdash;
+an empty `<examples>` tag announces a section and then says nothing, which
+invites the model to fill the gap itself.
+
+```
+<context>          reference material first: longest, and read as background
+<task>             the instruction, after the background
+<audience>
+<constraints>      one dash-prefixed item per line
+<examples>
+<output_format>    formatting lands near generation, where it still holds
+<success_criteria>
+```
+
+The UI shows the prompt with a copy button and a rough token estimate
+(characters / 4 &mdash; enough to warn you that a prompt is large, which is all
+that number is for). Editing a field marks a built prompt **out of date**, so
+you never copy something that no longer matches the fields above.
+
 ## Privacy
 
 - Audio is converted and transcribed in a per-request temp directory that is
@@ -230,7 +257,7 @@ machines without `say` or `ffmpeg`.
 - [x] **v0.3** &mdash; every extracted field is editable, with the follow-up
       question shown in place for anything missing, and skipping is just
       leaving it blank
-- [ ] **v0.4** &mdash; deterministic template assembles the final prompt with
+- [x] **v0.4** &mdash; deterministic template assembles the final prompt with
       XML-style sections, copy button, token estimate
 - [ ] **v1** &mdash; voice answers to follow-ups, URL detection with fetched
       summaries, target-model profiles, prompt history

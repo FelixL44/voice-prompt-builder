@@ -60,7 +60,7 @@ backend/
   config.py      env-var settings, all VPB_* prefixed
   prompts/       system prompts as .md files (v0.2+)
   analyze.py     Ollama extraction + missing-field detection
-  builder.py     deterministic prompt template (v0.4, not yet written)
+  builder.py     deterministic prompt template
 frontend/        index.html, app.js, style.css
 tests/
 ```
@@ -165,6 +165,15 @@ All settings live in `backend/config.py` and come from `VPB_*` env vars:
   The user considered disabling the DSP and **chose to leave it**, because in a
   genuinely noisy room the suppression may be helping, and nothing here proves
   otherwise. Revisit only with an A/B recording of the same words.
+- **`builder.py` must never call a model.** The extraction is already
+  structured; assembling it is string work. Determinism is the feature -- the
+  same fields give byte-identical output, and there is a test asserting it.
+- **Empty sections are omitted, not emitted blank.** An empty `<examples>` tag
+  announces a section and then says nothing, which invites the model to invent
+  content for it.
+- **Section order is deliberate**: context first (long reference material),
+  then task, then the qualifiers, with `output_format` and `success_criteria`
+  last because formatting instructions hold best nearest generation.
 - **The model name is allow-listed** (`ALLOWED_MODELS`) because the per-request
   override reaches the Hugging Face hub; it must never be free-form.
 - **Code, not the model, decides what is missing** in v0.3 (null/empty fields).
