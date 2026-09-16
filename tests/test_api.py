@@ -209,3 +209,70 @@ def test_analyze_extracts_structure_end_to_end() -> None:
     # (success_criteria is deliberately not asserted: a model can reasonably
     # read "must load in under a second" as either a constraint or a criterion.)
     assert "examples" in [m["field"] for m in body["missing"]]
+
+
+# ---------------------------------------------------------------------------
+# /build
+# ---------------------------------------------------------------------------
+
+
+def _extraction(**overrides: object) -> dict:
+    base = {
+        "goal": "Draft a first reply to a support ticket",
+        "audience": "Support agents",
+        "context": "Zendesk inbox",
+        "constraints": ["Never send automatically"],
+        "examples": [],
+        "output_format": "Reply plus a confidence score",
+        "success_criteria": ["60% accepted unedited"],
+    }
+    base.update(overrides)
+    return base
+
+
+def test_build_returns_a_prompt_and_an_estimate() -> None:
+    response = client.post("/build", json={"extraction": _extraction()})
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+
+    assert body["prompt"].startswith("<context>")
+    assert "Never send automatically" in body["prompt"]
+    assert body["characters"] == len(body["prompt"])
+    assert body["estimated_tokens"] == len(body["prompt"]) // 4
+    # examples was empty, so it must not appear.
+    assert "examples" not in body["sections"]
+
+
+def test_build_is_deterministic() -> None:
+    """The same fields must always give byte-identical output."""
+    payload = {"extraction": _extraction()}
+
+    first = client.post("/build", json=payload).json()["prompt"]
+    second = client.post("/build", json=payload).json()["prompt"]
+
+    assert first == second
+
+
+def test_build_rejects_an_empty_extraction() -> None:
+    empty = {key: (None if not isinstance(value, list) else [])
+             for key, value in _extraction().items()}
+
+    response = client.post("/build", json={"extraction": empty})
+
+    assert response.status_code == 422
+    assert response.json()["error"] == "empty_prompt"
+
+
+def test_build_accepts_a_partial_extraction() -> None:
+    """Skipped questions must not block the prompt, only shorten it."""
+    response = client.post(
+        "/build",
+        json={"extraction": {"goal": "Ship it", "constraints": [], "examples": [],
+                             "success_criteria": []}},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["sections"] == ["task"]
+    assert "<task>" in body["prompt"]
