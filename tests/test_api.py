@@ -164,7 +164,7 @@ def test_analyze_reports_unreachable_ollama(monkeypatch) -> None:
     def refuse(*_args: object, **_kwargs: object) -> None:
         raise httpx.ConnectError("refused")
 
-    monkeypatch.setattr(httpx, "post", refuse)
+    monkeypatch.setattr(httpx, "stream", refuse)
 
     try:
         response = client.post("/analyze", json={"transcript": "I need a landing page."})
@@ -366,7 +366,7 @@ def test_analyze_does_not_call_the_model_when_too_long(monkeypatch) -> None:
     import httpx
 
     called = []
-    monkeypatch.setattr(httpx, "post", lambda *a, **k: called.append(1))
+    monkeypatch.setattr(httpx, "stream", lambda *a, **k: called.append(1))
 
     response = client.post("/analyze", json={"transcript": "word " * 20_000})
 

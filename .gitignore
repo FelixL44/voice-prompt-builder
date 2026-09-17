@@ -11,5 +11,6 @@ __pycache__/
 # Project
 .env
 tmp/
+data/
 *.wav
 *.webm

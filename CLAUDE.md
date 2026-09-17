@@ -207,10 +207,29 @@ All settings live in `backend/config.py` and come from `VPB_*` env vars:
 - **The UI is a three-pane console** (sessions / stream / settings) built to a
   Figma mockup. The product name in the interface is **VoxPrompt**; the repo and
   Python package stay `voice-prompt-builder`.
-- **Session history lives in `localStorage`, never on the server.** That is what
-  keeps "nothing leaves your machine" true -- the backend is stateless by
-  design. Every storage access is wrapped in try/catch, because localStorage
-  throws in private mode and a broken cache must not take the app down.
+- **Session history is SQLite on the server** (`backend/store.py`, `data/`),
+  not `localStorage`. Browser-only history is lost with the cache and invisible
+  from any other browser. It stays local: stdlib `sqlite3`, one file, no
+  network. A connection is opened per call, never shared, because requests run
+  on a threadpool and SQLite connections are not thread-safe. Only the language
+  preference still lives in `localStorage`.
+- **The two slow steps run as jobs** (`backend/jobs.py`), polled rather than
+  awaited. Job state is in memory on purpose: a job whose thread died cannot be
+  resumed, and persisting it would let the UI show something untrue after a
+  restart. Cancellation is cooperative -- checked between Whisper segments and
+  between streamed Ollama tokens.
+- **Analysis streams from Ollama** (`"stream": True`). That is what makes it
+  interruptible and observable; the chunks are reassembled so callers still get
+  one response. Progress there is reported as tokens generated with a `None`
+  fraction, because the total is unknowable mid-generation and an invented
+  progress bar is worse than none. Tests must patch `httpx.stream`, not
+  `httpx.post`.
+- **The UI is bilingual (en/de)**; `STRINGS` in `app.js` holds one flat table
+  per language and `tests/test_i18n.py` asserts they have identical keys and
+  match the backend's languages. Backend errors are translated **by their
+  `error` code**, not their text, which is why the server can keep returning
+  English detail strings. Follow-up questions are localised server-side in
+  `QUESTIONS_BY_LANGUAGE`; field *values* follow the spoken language.
 - **No decorative telemetry.** The mockup showed invented figures (WebGPU ON,
   12ms latency, 98% clarity, 99.8% precision); those slots are filled with real
   values instead -- the actual engine, the actual elapsed time, the actual cache

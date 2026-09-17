@@ -103,6 +103,9 @@ class Settings:
 
     prompts_dir: Path = PROJECT_ROOT / "backend" / "prompts"
 
+    db_path: Path = PROJECT_ROOT / "data" / "sessions.db"
+    """Session history. Local, and the only thing this app writes to disk."""
+
 
 def _env_str(name: str, default: str) -> str:
     return os.environ.get(name, default).strip() or default
@@ -149,6 +152,7 @@ def get_settings() -> Settings:
         ollama_timeout_s=_env_int("VPB_OLLAMA_TIMEOUT_S", 600),
         ollama_num_ctx=_env_int("VPB_OLLAMA_NUM_CTX", 8192),
         ollama_response_reserve_tokens=_env_int("VPB_OLLAMA_RESPONSE_RESERVE", 512),
+        db_path=Path(_env_str("VPB_DB_PATH", str(PROJECT_ROOT / "data" / "sessions.db"))),
     )
 
 

@@ -15,7 +15,9 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 import time
+from collections.abc import Callable
 from functools import lru_cache
 
 import httpx
@@ -26,6 +28,9 @@ from backend.schemas import Extraction, MissingField
 from backend.tokens import estimate_tokens
 
 logger = logging.getLogger(__name__)
+
+# (fraction complete or None when unknowable, human-readable note)
+ProgressFn = Callable[[float | None, str], None]
 
 
 class AnalysisError(Exception):
@@ -58,6 +63,12 @@ class InvalidExtractionError(AnalysisError):
     code = "invalid_extraction"
 
 
+class AnalysisCancelledError(AnalysisError):
+    """The caller asked for the extraction to stop."""
+
+    code = "cancelled"
+
+
 class TranscriptTooLongError(AnalysisError):
     """The transcript will not fit the model's context window.
 
@@ -73,8 +84,9 @@ class TranscriptTooLongError(AnalysisError):
 
 
 # The question asked when a field comes back empty. Fixed text, because the
-# point of these is to be predictable -- not to spend another CPU-minute
-# asking the model to phrase a question it might also invent.
+# point of these is to be predictable -- not to spend another CPU-minute asking
+# the model to phrase a question it might also invent, in a language it might
+# also get wrong.
 QUESTIONS: dict[str, str] = {
     "goal": "What do you actually want to happen? One sentence is enough.",
     "audience": "Who is this for?",
@@ -84,6 +96,31 @@ QUESTIONS: dict[str, str] = {
     "output_format": "What shape should the result take? Email, JSON, table, memo?",
     "success_criteria": "How would you know this worked?",
 }
+
+QUESTIONS_DE: dict[str, str] = {
+    "goal": "Was soll konkret passieren? Ein Satz reicht.",
+    "audience": "F\u00fcr wen ist das gedacht?",
+    "context": "Welchen Hintergrund br\u00e4uchte jemand, um das gut zu machen?",
+    "constraints": "Gibt es harte Vorgaben? Budget, Ton, L\u00e4nge, Technik, Tabus?",
+    "examples": "Hast du ein Beispiel daf\u00fcr, wie ein gutes Ergebnis aussieht?",
+    "output_format": "Welche Form soll das Ergebnis haben? E-Mail, JSON, Tabelle, Memo?",
+    "success_criteria": "Woran w\u00fcrdest du merken, dass es funktioniert hat?",
+}
+
+QUESTIONS_BY_LANGUAGE: dict[str, dict[str, str]] = {"en": QUESTIONS, "de": QUESTIONS_DE}
+
+DEFAULT_LANGUAGE = "en"
+
+
+def questions_for(language: str | None) -> dict[str, str]:
+    """Follow-up questions in the requested language, falling back to English.
+
+    Only the questions are translated here. Field *values* follow the language
+    the person actually spoke, which the extraction prompt handles.
+    """
+    if not language:
+        return QUESTIONS
+    return QUESTIONS_BY_LANGUAGE.get(language.strip().lower()[:2], QUESTIONS)
 
 
 @lru_cache(maxsize=4)
@@ -146,7 +183,9 @@ def normalize(extraction: Extraction) -> Extraction:
     return Extraction.model_validate(cleaned)
 
 
-def find_missing(extraction: Extraction) -> list[MissingField]:
+def find_missing(
+    extraction: Extraction, language: str | None = None
+) -> list[MissingField]:
     """Return the empty fields, in the order they are worth asking about.
 
     This is deliberately dumb and deterministic: a field is missing when it is
@@ -154,8 +193,9 @@ def find_missing(extraction: Extraction) -> list[MissingField]:
     loop cannot be talked out of asking by a confident-sounding model.
     """
     data = extraction.model_dump()
+    questions = questions_for(language)
     return [
-        MissingField(field=name, question=QUESTIONS[name])
+        MissingField(field=name, question=questions[name])
         for name in QUESTIONS  # QUESTIONS defines both membership and priority.
         if name in data and is_empty(data[name])
     ]
@@ -198,7 +238,7 @@ def _request_body(transcript: str, settings: Settings) -> dict[str, object]:
     """Build the Ollama generate payload, constrained to the Extraction schema."""
     return {
         "model": settings.ollama_model,
-        "stream": False,
+        "stream": True,
         "format": Extraction.model_json_schema(),
         "system": load_prompt("extract"),
         # Tagged rather than bare, so a transcript that contains instructions
@@ -211,11 +251,62 @@ def _request_body(transcript: str, settings: Settings) -> dict[str, object]:
     }
 
 
-def _post_to_ollama(body: dict[str, object], settings: Settings) -> dict[str, object]:
-    """Call Ollama, translating transport failures into typed errors."""
+def _raise_for_status(status: int, detail: str, settings: Settings) -> None:
+    if status == 404:
+        raise OllamaModelMissingError(
+            f"Model {settings.ollama_model!r} is not available. "
+            f"Pull it with: ollama pull {settings.ollama_model}"
+        )
+    if status >= 400:
+        raise AnalysisError(f"Ollama returned {status}: {detail[:200]}")
+
+
+def _post_to_ollama(
+    body: dict[str, object],
+    settings: Settings,
+    on_progress: ProgressFn | None = None,
+    cancel: threading.Event | None = None,
+) -> dict[str, object]:
+    """Call Ollama, translating transport failures into typed errors.
+
+    Streamed rather than awaited whole: generation on a CPU takes tens of
+    seconds, and streaming is what makes it interruptible and observable. The
+    chunks are reassembled here, so callers still receive one response object.
+    """
     url = f"{settings.ollama_url}/api/generate"
+    pieces: list[str] = []
+    final: dict[str, object] = {}
+
     try:
-        response = httpx.post(url, json=body, timeout=settings.ollama_timeout_s)
+        with httpx.stream(
+            "POST", url, json=body, timeout=settings.ollama_timeout_s
+        ) as response:
+            if response.status_code >= 400:
+                response.read()
+                _raise_for_status(response.status_code, response.text, settings)
+
+            for line in response.iter_lines():
+                if cancel is not None and cancel.is_set():
+                    raise AnalysisCancelledError("Extraction cancelled.")
+                if not line.strip():
+                    continue
+
+                try:
+                    chunk = json.loads(line)
+                except ValueError:
+                    continue   # Ollama occasionally emits keep-alive blanks.
+
+                piece = chunk.get("response")
+                if isinstance(piece, str):
+                    pieces.append(piece)
+                    if on_progress and len(pieces) % 8 == 0:
+                        # Total length is unknowable mid-stream, so report work
+                        # done rather than a fraction that would be invented.
+                        on_progress(None, f"{len(pieces)} tokens generated")
+                if chunk.get("done"):
+                    final = chunk
+    except (AnalysisCancelledError, AnalysisError):
+        raise
     except httpx.TimeoutException as exc:
         raise OllamaTimeoutError(
             f"The model took longer than {settings.ollama_timeout_s}s. "
@@ -227,20 +318,8 @@ def _post_to_ollama(body: dict[str, object], settings: Settings) -> dict[str, ob
             "Start it with: ollama serve"
         ) from exc
 
-    if response.status_code == 404:
-        raise OllamaModelMissingError(
-            f"Model {settings.ollama_model!r} is not available. "
-            f"Pull it with: ollama pull {settings.ollama_model}"
-        )
-    if response.status_code >= 400:
-        raise AnalysisError(
-            f"Ollama returned {response.status_code}: {response.text[:200]}"
-        )
-
-    try:
-        return response.json()
-    except ValueError as exc:
-        raise AnalysisError("Ollama returned a response that was not JSON.") from exc
+    final["response"] = "".join(pieces)
+    return final
 
 
 def _parse_extraction(payload: dict[str, object]) -> Extraction:
@@ -271,7 +350,10 @@ def _parse_extraction(payload: dict[str, object]) -> Extraction:
 
 
 def analyze_transcript(
-    transcript: str, settings: Settings | None = None
+    transcript: str,
+    settings: Settings | None = None,
+    on_progress: ProgressFn | None = None,
+    cancel: threading.Event | None = None,
 ) -> tuple[Extraction, float]:
     """Extract structure from a transcript.
 
@@ -289,7 +371,11 @@ def analyze_transcript(
     tokens = check_transcript_fits(transcript, settings)
 
     started = time.monotonic()
-    payload = _post_to_ollama(_request_body(transcript, settings), settings)
+    if on_progress:
+        on_progress(None, "sending the transcript to the model")
+    payload = _post_to_ollama(
+        _request_body(transcript, settings), settings, on_progress, cancel
+    )
     _warn_if_truncated(payload, transcript, settings)
     extraction = normalize(_parse_extraction(payload))
     elapsed = time.monotonic() - started

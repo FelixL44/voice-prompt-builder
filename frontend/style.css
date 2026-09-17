@@ -631,3 +631,69 @@ select:focus, .settings textarea:focus { outline: none; border-color: var(--acce
   .fields li { grid-template-columns: 1fr; gap: 4px; }
   .field-name { padding-top: 0; }
 }
+
+/* ── Language toggle ───────────────────────────────────────────────────── */
+
+.topbar-right { display: flex; align-items: center; gap: 14px; }
+
+.lang-toggle {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  overflow: hidden;
+}
+.lang-btn {
+  font: inherit;
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: .04em;
+  padding: 3px 9px;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+.lang-btn:hover { color: var(--text); }
+.lang-btn.active { background: var(--accent); color: #fff; }
+
+/* ── Job progress + cancel ─────────────────────────────────────────────── */
+
+.status-body { flex: 1; min-width: 0; }
+
+.progress {
+  height: 5px;
+  margin-top: 8px;
+  background: var(--border);
+  border-radius: 3px;
+  overflow: hidden;
+}
+.progress-fill {
+  height: 100%;
+  width: 0%;
+  background: var(--accent);
+  border-radius: 3px;
+  transition: width .25s ease;
+}
+.btn-cancel { flex: none; padding: 6px 12px; font-size: 12.5px; }
+.btn-cancel:hover:not(:disabled) { border-color: var(--danger); color: var(--danger); }
+
+/* ── Session delete ────────────────────────────────────────────────────── */
+
+.session-list li { display: flex; align-items: center; gap: 2px; }
+.session-list li .session-item { flex: 1; min-width: 0; }
+
+.session-delete {
+  flex: none;
+  width: 22px; height: 22px;
+  border: none;
+  background: none;
+  color: var(--faint);
+  font-size: 16px;
+  line-height: 1;
+  border-radius: 5px;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity .12s;
+}
+.session-list li:hover .session-delete { opacity: 1; }
+.session-delete:hover { background: var(--danger-soft); color: var(--danger); }

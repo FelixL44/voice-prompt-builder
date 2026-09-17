@@ -104,6 +104,80 @@ class AnalysisRequest(BaseModel):
     """
 
     transcript: str = Field(min_length=1, description="The (possibly edited) transcript.")
+    language: str = Field(
+        default="en", description="Language for the follow-up questions: en or de."
+    )
+
+
+class JobAccepted(BaseModel):
+    """Returned when long-running work is queued."""
+
+    job_id: str
+    kind: str
+
+
+class JobStatus(BaseModel):
+    """Everything the UI needs to render a running job."""
+
+    id: str
+    kind: str
+    state: str = Field(description="queued, running, done, error or cancelled.")
+    progress: float | None = Field(
+        default=None, description="0..1, or null where it cannot be known."
+    )
+    note: str = ""
+    result: dict | None = None
+    error: str | None = None
+    error_code: str | None = None
+    elapsed_s: float = 0.0
+
+
+class SessionSummary(BaseModel):
+    """One row in the session list."""
+
+    id: str
+    title: str
+    created: float
+    updated: float
+    language: str = "en"
+    audio_seconds: float = 0
+    transcript_chars: int = 0
+    has_prompt: bool = False
+
+
+class SessionRecord(BaseModel):
+    """A full stored session."""
+
+    id: str
+    created: float
+    updated: float
+    title: str = ""
+    language: str = "en"
+    audio_name: str = ""
+    audio_seconds: float = 0
+    transcript: str = ""
+    extraction: Extraction | None = None
+    prompt: str = ""
+    meta: dict | None = None
+
+
+class SessionSaveRequest(BaseModel):
+    """Upsert body. Omitting ``id`` creates a new session."""
+
+    id: str | None = None
+    title: str = ""
+    language: str = "en"
+    audio_name: str = ""
+    audio_seconds: float = 0
+    transcript: str = ""
+    extraction: Extraction | None = None
+    prompt: str = ""
+    meta: dict | None = None
+
+
+class StoreStats(BaseModel):
+    sessions: int
+    bytes: int
 
 
 class MissingField(BaseModel):

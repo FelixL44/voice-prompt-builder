@@ -15,7 +15,7 @@ import threading
 import time
 import uuid
 import wave
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -24,6 +24,9 @@ from faster_whisper import WhisperModel
 
 from backend.config import Settings, get_settings
 from backend.schemas import Segment
+
+# (fraction complete 0..1, human-readable note)
+ProgressFn = Callable[[float, str], None]
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +69,12 @@ class AudioTooLongError(TranscriptionError):
     """The recording exceeds the configured length limit."""
 
     code = "audio_too_long"
+
+
+class CancelledError(TranscriptionError):
+    """The caller asked for the work to stop."""
+
+    code = "cancelled"
 
 
 # --------------------------------------------------------------------------
@@ -340,18 +349,36 @@ class TranscriptionResult:
     segments: list[Segment]
 
 
-def transcribe_wav(wav_path: Path, settings: Settings | None = None) -> TranscriptionResult:
+def transcribe_wav(
+    wav_path: Path,
+    settings: Settings | None = None,
+    on_progress: ProgressFn | None = None,
+    cancel: threading.Event | None = None,
+) -> TranscriptionResult:
     """Transcribe a 16 kHz mono WAV file.
+
+    Args:
+        on_progress: called with a 0..1 fraction as each segment lands.
+        cancel: checked between segments; set it to stop early.
 
     Raises:
         ModelLoadError: the model could not be loaded.
         EmptyAudioError: no speech was found.
+        CancelledError: ``cancel`` was set.
         TranscriptionError: decoding failed for any other reason.
     """
     settings = settings or get_settings()
+    if on_progress:
+        # Loading can take a while on a cold model, and the note would
+        # otherwise still claim the audio is being converted.
+        on_progress(0.0, "loading model" if not model_is_loaded() else "transcribing")
     model = get_model(settings)
 
     started = time.monotonic()
+    if on_progress:
+        # Whisper yields nothing until it has processed the first segment, so
+        # this is the last honest update for a few seconds on a long file.
+        on_progress(0.0, "transcribing")
     try:
         segment_iter, info = model.transcribe(
             str(wav_path),
@@ -360,11 +387,18 @@ def transcribe_wav(wav_path: Path, settings: Settings | None = None) -> Transcri
             vad_filter=settings.vad_filter,
             initial_prompt=settings.initial_prompt or None,
         )
-        # faster-whisper is lazy: the real work happens while draining this.
-        segments = [
-            Segment(start=round(s.start, 2), end=round(s.end, 2), text=s.text.strip())
-            for s in segment_iter
-        ]
+        # faster-whisper is lazy: the real work happens while draining this,
+        # which is what makes per-segment progress and cancellation possible.
+        segments: list[Segment] = []
+        for raw in segment_iter:
+            if cancel is not None and cancel.is_set():
+                raise CancelledError("Transcription cancelled.")
+
+            segments.append(
+                Segment(start=round(raw.start, 2), end=round(raw.end, 2), text=raw.text.strip())
+            )
+            if on_progress and info.duration:
+                on_progress(min(1.0, raw.end / info.duration), f"{len(segments)} segments")
     except TranscriptionError:
         raise
     except Exception as exc:  # noqa: BLE001 - surfaced verbatim to the user
@@ -403,6 +437,8 @@ def transcribe_upload(
     data: bytes,
     filename: str,
     settings: Settings | None = None,
+    on_progress: ProgressFn | None = None,
+    cancel: threading.Event | None = None,
 ) -> TranscriptionResult:
     """Convert raw uploaded audio bytes and transcribe them.
 
@@ -429,7 +465,14 @@ def transcribe_upload(
         if probed is not None:
             _check_duration(probed, settings)
 
+        if on_progress:
+            on_progress(0.0, "waiting for a transcription slot")
+
         with _transcription_slots(settings):
+            if cancel is not None and cancel.is_set():
+                raise CancelledError("Transcription cancelled before it started.")
+            if on_progress:
+                on_progress(0.0, "converting audio")
             convert_to_wav(raw_path, wav_path, settings)
 
             # Backstop for inputs whose metadata lied or was absent. Converting
@@ -438,4 +481,4 @@ def transcribe_upload(
             if actual is not None:
                 _check_duration(actual, settings)
 
-            return transcribe_wav(wav_path, settings)
+            return transcribe_wav(wav_path, settings, on_progress, cancel)

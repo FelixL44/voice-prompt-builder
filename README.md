@@ -80,6 +80,7 @@ Every setting is an environment variable:
 | `VPB_MAX_UPLOAD_BYTES` | `104857600` | 100 MB |
 | `VPB_MAX_AUDIO_SECONDS` | `1800` | 30 minutes; a size cap is not a length cap |
 | `VPB_OLLAMA_RESPONSE_RESERVE` | `512` | Context tokens held back for the reply |
+| `VPB_DB_PATH` | `./data/sessions.db` | Session history |
 | `VPB_FFMPEG_PATH` | `ffmpeg` | |
 | `VPB_MAX_CONCURRENT_TRANSCRIPTIONS` | `1` | Queue rather than thrash a CPU |
 | `VPB_WARMUP` | `true` | Load the model at startup, not on first use |
@@ -134,6 +135,13 @@ right.
 | `POST /transcribe` | Multipart `audio` file &rarr; transcript JSON. Optional `model` and `vocabulary` fields |
 | `POST /analyze` | `{"transcript": "..."}` &rarr; structured fields plus what is missing |
 | `POST /build` | `{"extraction": {...}}` &rarr; the assembled prompt |
+| `POST /jobs/transcribe` | Same as `/transcribe`, but returns a job id |
+| `POST /jobs/analyze` | Same as `/analyze`, but returns a job id |
+| `GET /jobs/{id}` | Poll state, progress and result |
+| `POST /jobs/{id}/cancel` | Ask a running job to stop |
+| `GET /sessions` | Session history, newest first |
+| `PUT /sessions` | Create or update a session |
+| `DELETE /sessions/{id}` | Delete one, or all with no id |
 | `GET /docs` | Interactive OpenAPI docs |
 
 ```bash
@@ -208,11 +216,21 @@ roughly double the time.
 The UI is a three-pane agentic console: sessions on the left, the workflow
 stream in the middle, accuracy settings on the right.
 
-**Sessions are cached in the browser.** Each run is saved to `localStorage`
-with its transcript, variables and final prompt, and reopening one restores
-every stage. That keeps the privacy promise intact: session history never
-reaches the server, because the server holds no state at all. The settings pane
-shows the real cache size and can clear it.
+**Sessions are stored on the server**, in a SQLite file under `data/`. Each run
+is saved with its transcript, variables and final prompt; reopening one restores
+every stage, and it survives a cleared browser cache or a restart. Still
+entirely local &mdash; the server writes one file and talks to nobody.
+
+**The two slow steps run as jobs.** Transcription and extraction return a job id
+immediately, then report real progress and can be cancelled. Whisper progress
+comes from segment timestamps, so it is measured rather than guessed; extraction
+streams from Ollama and reports tokens generated, because the total is genuinely
+unknowable mid-generation. Cancellation is cooperative &mdash; checked between
+segments and between streamed tokens &mdash; so it lands within a second or two.
+
+**The interface switches between English and German** with the toggle in the
+header. That covers the follow-up questions too, which come from the server.
+Extracted *values* follow whatever language you actually spoke.
 
 Every number in the interface is a real measurement &mdash; actual engine,
 actual elapsed time, actual cache size. There is no decorative telemetry.
@@ -294,6 +312,8 @@ tokens sent after every call and a large shortfall is logged as a warning.
   deleted afterwards, **including when transcription fails**. There is a test
   asserting this.
 - Nothing is logged except durations and sizes &mdash; never transcript text.
+- Session history is written to `data/sessions.db` on this machine. It is the
+  only thing the app keeps, it never leaves, and the settings pane clears it.
 - No telemetry, no analytics, no outbound requests beyond the model download.
 
 ## Tests

@@ -14,6 +14,7 @@ import pytest
 
 from backend.analyze import (
     QUESTIONS,
+    AnalysisCancelledError,
     normalize,
     InvalidExtractionError,
     OllamaModelMissingError,
@@ -140,36 +141,59 @@ def _settings() -> Settings:
     return Settings(ollama_url="http://localhost:1", ollama_timeout_s=1)
 
 
+class FakeStream:
+    """Stands in for httpx.stream, which analysis uses to stay interruptible."""
+
+    def __init__(self, status: int = 200, lines: tuple[str, ...] = ()) -> None:
+        self.status_code = status
+        self.text = "fake error body"
+        self._lines = lines
+
+    def __enter__(self) -> "FakeStream":
+        return self
+
+    def __exit__(self, *_exc: object) -> bool:
+        return False
+
+    def read(self) -> bytes:
+        return b""
+
+    def iter_lines(self):
+        yield from self._lines
+
+
+def _streaming(status: int = 200, lines: tuple[str, ...] = ()):
+    return lambda *_a, **_k: FakeStream(status, lines)
+
+
+def _raising(exc: Exception):
+    def boom(*_a: object, **_k: object) -> None:
+        raise exc
+
+    return boom
+
+
 def test_empty_transcript_is_rejected_before_calling_the_model() -> None:
     with pytest.raises(InvalidExtractionError, match="empty"):
         analyze_transcript("   ", _settings())
 
 
 def test_unreachable_ollama_gives_an_actionable_error(monkeypatch) -> None:
-    def boom(*_args: object, **_kwargs: object) -> None:
-        raise httpx.ConnectError("refused")
-
-    monkeypatch.setattr(httpx, "post", boom)
+    monkeypatch.setattr(httpx, "stream", _raising(httpx.ConnectError("refused")))
 
     with pytest.raises(OllamaUnavailableError, match="ollama serve"):
         analyze_transcript("something", _settings())
 
 
 def test_timeout_is_reported_as_such(monkeypatch) -> None:
-    def slow(*_args: object, **_kwargs: object) -> None:
-        raise httpx.ReadTimeout("too slow")
-
-    monkeypatch.setattr(httpx, "post", slow)
+    monkeypatch.setattr(httpx, "stream", _raising(httpx.ReadTimeout("too slow")))
 
     with pytest.raises(OllamaTimeoutError):
         analyze_transcript("something", _settings())
 
 
 def test_missing_model_tells_you_how_to_pull_it(monkeypatch) -> None:
-    def not_found(*_args: object, **_kwargs: object) -> httpx.Response:
-        return httpx.Response(404, json={"error": "model not found"})
-
-    monkeypatch.setattr(httpx, "post", not_found)
+    monkeypatch.setattr(httpx, "stream", _streaming(status=404))
 
     with pytest.raises(OllamaModelMissingError, match="ollama pull"):
         analyze_transcript("something", _settings())
@@ -223,3 +247,51 @@ def test_normalize_leaves_real_content_alone() -> None:
     )
 
     assert normalize(full) == full
+
+
+# ---------------------------------------------------------------------------
+# Streaming, progress and cancellation
+# ---------------------------------------------------------------------------
+
+
+def test_streamed_chunks_are_reassembled(monkeypatch) -> None:
+    """The caller still gets one whole response, not fragments."""
+    lines = (
+        json.dumps({"response": '{"goal": "Shi'}),
+        json.dumps({"response": 'p it"}'}),
+        json.dumps({"response": "", "done": True, "prompt_eval_count": 40}),
+    )
+    monkeypatch.setattr(httpx, "stream", _streaming(lines=lines))
+
+    extraction, _ = analyze_transcript("a transcript", _settings())
+
+    assert extraction.goal == "Ship it"
+
+
+def test_progress_is_reported_while_streaming(monkeypatch) -> None:
+    """Enough chunks to cross the reporting interval, reassembling to real JSON."""
+    document = json.dumps({"goal": "Ship the thing", "audience": "Engineers"})
+    lines = tuple(json.dumps({"response": ch}) for ch in document)
+    lines += (json.dumps({"response": "", "done": True}),)
+    monkeypatch.setattr(httpx, "stream", _streaming(lines=lines))
+
+    notes: list[str] = []
+    extraction, _ = analyze_transcript(
+        "a transcript", _settings(), on_progress=lambda f, n: notes.append(n)
+    )
+
+    assert extraction.goal == "Ship the thing"
+    assert any("tokens generated" in note for note in notes)
+
+
+def test_cancellation_stops_the_stream(monkeypatch) -> None:
+    """A cancel mid-generation must abort rather than run to completion."""
+    import threading
+
+    cancel = threading.Event()
+    cancel.set()   # Already cancelled: the first chunk should abort.
+    lines = tuple([json.dumps({"response": "x"})] * 100)
+    monkeypatch.setattr(httpx, "stream", _streaming(lines=lines))
+
+    with pytest.raises(AnalysisCancelledError):
+        analyze_transcript("a transcript", _settings(), cancel=cancel)

@@ -21,19 +21,19 @@
       </div>
       <div class="brand-text">
         <h1>VoxPrompt</h1>
-        <p>Agentic Prompt Engineering</p>
+        <p data-i18n="tagline">Agentic Prompt Engineering</p>
       </div>
     </div>
 
     <button id="newSessionBtn" class="btn btn-new" type="button">
-      <span aria-hidden="true">+</span> New session
+      <span aria-hidden="true">+</span> <span data-i18n="new_session">New session</span>
     </button>
 
-    <div class="rail-label">Recent sessions</div>
+    <div class="rail-label" data-i18n="recent_sessions">Recent sessions</div>
     <nav class="session-scroll">
       <ul class="session-list" id="sessionList"></ul>
       <p class="session-empty" id="sessionEmpty">
-        No sessions yet. Record something and it will be saved here.
+        <span data-i18n="no_sessions">No sessions yet. Record something and it will be saved here.</span>
       </p>
     </nav>
 
@@ -43,13 +43,13 @@
              stroke-width="2" aria-hidden="true">
           <path d="M12 2l8 4v6c0 5-3.4 8.5-8 10-4.6-1.5-8-5-8-10V6l8-4z"/>
         </svg>
-        <strong>100% Local Processing</strong>
+        <strong data-i18n="local_processing">100% Local Processing</strong>
       </div>
-      <p>Audio is transcribed by a server on this machine and deleted straight after. Nothing leaves your system.</p>
+      <p data-i18n="local_blurb">Audio is transcribed by a server on this machine and deleted straight after. Nothing leaves your system.</p>
       <dl class="stat-rows">
-        <div><dt>Engine</dt><dd id="statEngine">&mdash;</dd></div>
-        <div><dt>Whisper</dt><dd id="statWhisper">&mdash;</dd></div>
-        <div><dt>Last run</dt><dd id="statLatency">&mdash;</dd></div>
+        <div><dt data-i18n="stat_engine">Engine</dt><dd id="statEngine">&mdash;</dd></div>
+        <div><dt data-i18n="stat_whisper">Whisper</dt><dd id="statWhisper">&mdash;</dd></div>
+        <div><dt data-i18n="stat_last_run">Last run</dt><dd id="statLatency">&mdash;</dd></div>
       </dl>
     </div>
   </aside>
@@ -58,12 +58,18 @@
   <main class="main">
     <div class="topbar">
       <span class="topbar-text">
-        <strong>Private Sandbox:</strong>
+        <strong data-i18n="private_sandbox">Private Sandbox:</strong>
         <span id="sandboxLine">Whisper and a local LLM, running entirely offline.</span>
       </span>
-      <span class="topbar-status" id="sandboxStatus">
-        <span class="dot-status" id="statusDot"></span><span id="statusLabel">Checking&hellip;</span>
-      </span>
+      <div class="topbar-right">
+        <div class="lang-toggle" role="group" aria-label="Language">
+          <button type="button" class="lang-btn" id="langEn" data-lang="en">EN</button>
+          <button type="button" class="lang-btn" id="langDe" data-lang="de">DE</button>
+        </div>
+        <span class="topbar-status" id="sandboxStatus">
+          <span class="dot-status" id="statusDot"></span><span id="statusLabel">&hellip;</span>
+        </span>
+      </div>
     </div>
 
     <div class="stream" id="stream">
@@ -75,11 +81,9 @@
           </svg>
         </div>
         <div class="agent-body">
-          <h2>VoxPrompt Agent</h2>
+          <h2 data-i18n="agent_name">VoxPrompt Agent</h2>
           <p>
-            Record or upload a rough spoken idea. I transcribe it locally, sort it into
-            prompt fields you can correct, and assemble a production-ready prompt.
-            Fully offline.
+<span data-i18n="agent_blurb">Record or upload a rough spoken idea. I transcribe it locally, sort it into prompt fields you can correct, and assemble a production-ready prompt. Fully offline.</span>
           </p>
         </div>
       </div>
@@ -113,17 +117,17 @@
         <!-- 1. Transcript -->
         <article class="card" id="resultCard" hidden>
           <header class="card-head">
-            <h3><span class="card-icon" aria-hidden="true">1</span> Refined Transcript</h3>
+            <h3><span class="card-icon" aria-hidden="true">1</span> <span data-i18n="step_transcript">Refined Transcript</span></h3>
             <span class="badge" id="resultMeta"></span>
           </header>
-          <p class="card-hint">Editable &mdash; fix anything misheard before the next step.</p>
+          <p class="card-hint" data-i18n="transcript_hint">Editable &mdash; fix anything misheard before the next step.</p>
           <textarea id="transcript" class="transcript" spellcheck="true"
                     aria-label="Editable transcript"></textarea>
           <footer class="card-foot">
             <span class="meta" id="charCount"></span>
             <div class="btn-row">
-              <button id="copyBtn" class="btn btn-ghost" type="button">Copy transcript</button>
-              <button id="analyzeBtn" class="btn btn-primary" type="button">Extract variables</button>
+              <button id="copyBtn" class="btn btn-ghost" type="button" data-i18n="copy_transcript">Copy transcript</button>
+              <button id="analyzeBtn" class="btn btn-primary" type="button" data-i18n="extract_variables">Extract variables</button>
             </div>
           </footer>
         </article>
@@ -131,12 +135,11 @@
         <!-- 2. Variables -->
         <article class="card" id="analyzeCard" hidden>
           <header class="card-head">
-            <h3><span class="card-icon" aria-hidden="true">2</span> Extracted System Variables</h3>
+            <h3><span class="card-icon" aria-hidden="true">2</span> <span data-i18n="step_variables">Extracted System Variables</span></h3>
             <span class="badge" id="analyzeMeta"></span>
           </header>
           <p class="card-hint">
-            Parsed from the transcript by the local model. Every field is editable &mdash;
-            correct what it got wrong, fill what it missed. Blanks are simply left out.
+<span data-i18n="variables_hint">Parsed from the transcript by the local model. Every field is editable &mdash; correct what it got wrong, fill what it missed. Blanks are simply left out.</span>
           </p>
 
           <div id="analyzeResult" hidden>
@@ -145,12 +148,12 @@
             <footer class="card-foot">
               <span class="meta" id="fieldStatus"></span>
               <div class="btn-row">
-                <button id="copyJsonBtn" class="btn btn-ghost" type="button">Copy JSON</button>
-                <button id="buildBtn" class="btn btn-primary" type="button">Build prompt</button>
+                <button id="copyJsonBtn" class="btn btn-ghost" type="button" data-i18n="copy_json">Copy JSON</button>
+                <button id="buildBtn" class="btn btn-primary" type="button" data-i18n="build_prompt">Build prompt</button>
               </div>
             </footer>
             <details class="raw">
-              <summary>Raw variable mapping (JSON)</summary>
+              <summary data-i18n="raw_mapping">Raw variable mapping (JSON)</summary>
               <pre id="rawJson"></pre>
             </details>
           </div>
@@ -159,20 +162,19 @@
         <!-- 3. Prompt -->
         <article class="card card-final" id="buildCard" hidden>
           <header class="card-head">
-            <h3><span class="card-icon" aria-hidden="true">3</span> System Prompt Blueprint</h3>
+            <h3><span class="card-icon" aria-hidden="true">3</span> <span data-i18n="step_prompt">System Prompt Blueprint</span></h3>
             <span class="badge" id="buildMeta"></span>
           </header>
           <p class="card-hint">
-            Assembled by a fixed template, not by a model &mdash; the same fields always
-            produce the same prompt.
+<span data-i18n="prompt_hint">Assembled by a fixed template, not by a model &mdash; the same fields always produce the same prompt.</span>
           </p>
           <div id="buildResult" hidden>
             <pre class="prompt-output" id="promptOutput"></pre>
             <footer class="card-foot">
               <span class="meta" id="promptStats"></span>
               <div class="btn-row">
-                <button id="refineBtn" class="btn btn-ghost" type="button">Refine variables</button>
-                <button id="copyPromptBtn" class="btn btn-primary" type="button">Copy final prompt</button>
+                <button id="refineBtn" class="btn btn-ghost" type="button" data-i18n="refine_variables">Refine variables</button>
+                <button id="copyPromptBtn" class="btn btn-primary" type="button" data-i18n="copy_prompt">Copy final prompt</button>
               </div>
             </footer>
           </div>
@@ -182,10 +184,15 @@
       <!-- Inline progress -->
       <div class="status-row" id="statusCard" hidden aria-live="polite">
         <span class="spinner" id="spinner" aria-hidden="true"></span>
-        <span>
+        <div class="status-body">
           <strong id="statusText">Working&hellip;</strong>
           <span class="meta" id="statusHint"></span>
-        </span>
+          <div class="progress" id="progressTrack" hidden>
+            <div class="progress-fill" id="progressFill"></div>
+          </div>
+        </div>
+        <button id="cancelBtn" class="btn btn-ghost btn-cancel" type="button"
+                data-i18n="cancel">Cancel</button>
       </div>
     </div>
 
@@ -197,7 +204,7 @@
                stroke-width="2" aria-hidden="true">
             <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M12 3v12M7 8l5-5 5 5"/>
           </svg>
-          Upload audio file
+          <span data-i18n="upload_audio">Upload audio file</span>
         </label>
         <input id="fileInput" type="file" accept="audio/*" hidden>
         <span class="meta" id="fileName">mp3, wav, m4a, webm &middot; up to 30 min</span>
@@ -214,7 +221,7 @@
         </div>
         <span class="timer" id="timer">00:00</span>
         <button id="processBtn" class="btn btn-primary btn-process" type="button" disabled>
-          Process audio <span aria-hidden="true">&rarr;</span>
+          <span data-i18n="process_audio">Process audio</span> <span aria-hidden="true">&rarr;</span>
         </button>
       </div>
     </div>
@@ -223,37 +230,35 @@
   <!-- ── Settings ──────────────────────────────────────────────────── -->
   <aside class="settings">
     <header class="settings-head">
-      <h2>Accuracy Settings</h2>
+      <h2 data-i18n="accuracy_settings">Accuracy Settings</h2>
     </header>
 
     <section class="setting">
-      <div class="rail-label">Transcription model</div>
+      <div class="rail-label" data-i18n="transcription_model">Transcription model</div>
       <select id="modelSelect"></select>
       <p class="help" id="modelHint"></p>
     </section>
 
     <section class="setting">
-      <div class="rail-label">Target model</div>
+      <div class="rail-label" data-i18n="target_model">Target model</div>
       <div class="readonly-field" id="targetModel">&mdash;</div>
       <p class="help">
-        The local LLM that extracts variables. Set with
-        <code>VPB_OLLAMA_MODEL</code> when starting the server.
+<span data-i18n="target_model_help">The local LLM that extracts variables. Set with VPB_OLLAMA_MODEL when starting the server.</span>
       </p>
     </section>
 
     <section class="setting">
-      <div class="rail-label">Names &amp; jargon</div>
+      <div class="rail-label" data-i18n="names_jargon">Names &amp; jargon</div>
       <textarea id="vocabulary" rows="3"
                 placeholder="Mermaid.js, JSON, CRUD, SQL, WebGPU, microservices"></textarea>
       <p class="help" id="vocabHint">
-        Custom technical keywords or spelling targets to bias the Whisper engine.
-        Comma-separated <strong>terms</strong>, not sentences.
+<span data-i18n="vocab_hint">Custom technical keywords or spelling targets to bias the Whisper engine. Comma-separated terms, not sentences.</span>
       </p>
     </section>
 
     <section class="cache-card">
       <div class="cache-head">
-        <span>Local session cache</span>
+        <span data-i18n="session_cache">Local session cache</span>
         <span class="cache-size" id="cacheSize">0 KB</span>
       </div>
       <button id="clearCacheBtn" class="cache-clear" type="button">
@@ -261,7 +266,7 @@
              stroke-width="2" aria-hidden="true">
           <path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6M10 11v6M14 11v6"/>
         </svg>
-        Clear session databases
+        <span data-i18n="clear_cache">Clear session databases</span>
       </button>
     </section>
   </aside>

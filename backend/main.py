@@ -16,6 +16,7 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
+from backend import store
 from backend.analyze import (
     AnalysisError,
     analyze_transcript,
@@ -23,6 +24,7 @@ from backend.analyze import (
     ollama_model_available,
     ollama_models,
 )
+from backend.jobs import Job, JobState, registry, run_job
 from backend.builder import (
     EmptyPromptError,
     build_prompt,
@@ -37,6 +39,12 @@ from backend.schemas import (
     BuildResponse,
     ErrorResponse,
     HealthResponse,
+    JobAccepted,
+    JobStatus,
+    SessionRecord,
+    SessionSaveRequest,
+    SessionSummary,
+    StoreStats,
     TranscriptionResponse,
 )
 from backend.transcribe import (
@@ -121,6 +129,8 @@ _STATUS_BY_CODE = {
     "empty_prompt": 422,
     "audio_too_long": 413,
     "transcript_too_long": 422,
+    "cancelled": 499,
+    "store_unavailable": 503,
 }
 
 
@@ -137,6 +147,7 @@ async def _typed_error_handler(
 app.add_exception_handler(TranscriptionError, _typed_error_handler)  # type: ignore[arg-type]
 app.add_exception_handler(AnalysisError, _typed_error_handler)  # type: ignore[arg-type]
 app.add_exception_handler(EmptyPromptError, _typed_error_handler)  # type: ignore[arg-type]
+app.add_exception_handler(store.StoreError, _typed_error_handler)  # type: ignore[arg-type]
 
 
 def _too_large(limit: int) -> HTTPException:
@@ -280,7 +291,7 @@ def analyze(request: AnalysisRequest) -> AnalysisResponse:
 
     # Missing fields are computed here, from the extraction -- the model is
     # never asked what it failed to find.
-    missing = find_missing(extraction)
+    missing = find_missing(extraction, request.language)
     logger.info("Extraction complete, %d field(s) missing", len(missing))
 
     return AnalysisResponse(
@@ -310,6 +321,142 @@ def build(request: BuildRequest) -> BuildResponse:
         characters=len(prompt),
         sections=used_sections(request.extraction),
     )
+
+
+# ---------------------------------------------------------------------------
+# Jobs: long work, made observable and interruptible
+# ---------------------------------------------------------------------------
+
+
+@app.post("/jobs/transcribe", response_model=JobAccepted, status_code=202)
+async def start_transcription(
+    request: Request,
+    audio: UploadFile = File(...),
+    model: str | None = Form(default=None),
+    vocabulary: str | None = Form(default=None),
+) -> JobAccepted:
+    """Queue a transcription and return immediately with its job id."""
+    base_settings = get_settings()
+    try:
+        settings = for_request(base_settings, model, vocabulary)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    data = await _read_upload(audio, request, settings.max_upload_bytes)
+    filename = audio.filename or "recording.webm"
+    job = registry.create("transcribe")
+
+    def work(current: Job) -> dict[str, object]:
+        def progress(fraction: float, note: str) -> None:
+            registry.update(current.id, progress=fraction, note=note)
+
+        result = transcribe_upload(data, filename, settings, progress, current.cancel)
+        return TranscriptionResponse(
+            text=result.text, language=result.language, duration=result.duration,
+            model=result.model, elapsed_s=result.elapsed_s, segments=result.segments,
+        ).model_dump()
+
+    run_job(job, work)
+    logger.info("Queued transcription %s for %s", job.id, filename)
+    return JobAccepted(job_id=job.id, kind=job.kind)
+
+
+@app.post("/jobs/analyze", response_model=JobAccepted, status_code=202)
+def start_analysis(request: AnalysisRequest) -> JobAccepted:
+    """Queue an extraction and return immediately with its job id."""
+    settings = get_settings()
+    job = registry.create("analyze")
+
+    def work(current: Job) -> dict[str, object]:
+        def progress(fraction: float | None, note: str) -> None:
+            registry.update(current.id, progress=fraction, note=note)
+
+        extraction, elapsed = analyze_transcript(
+            request.transcript, settings, progress, current.cancel
+        )
+        return AnalysisResponse(
+            extraction=extraction,
+            missing=find_missing(extraction, request.language),
+            model=settings.ollama_model,
+            elapsed_s=elapsed,
+        ).model_dump()
+
+    run_job(job, work)
+    return JobAccepted(job_id=job.id, kind=job.kind)
+
+
+@app.get("/jobs/{job_id}", response_model=JobStatus, responses={404: {"model": ErrorResponse}})
+def job_status(job_id: str) -> JobStatus:
+    """Poll a job. Finished jobs stay readable for a while, then are swept."""
+    job = registry.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="No such job, or it has expired.")
+    return JobStatus(**job.snapshot())
+
+
+@app.post("/jobs/{job_id}/cancel", response_model=JobStatus,
+          responses={404: {"model": ErrorResponse}})
+def cancel_job(job_id: str) -> JobStatus:
+    """Ask a job to stop.
+
+    Cancellation is cooperative: the worker checks between Whisper segments and
+    between streamed model tokens, so it takes effect within a second or two
+    rather than instantly.
+    """
+    job = registry.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="No such job, or it has expired.")
+
+    registry.cancel(job_id)
+    return JobStatus(**job.snapshot())
+
+
+# ---------------------------------------------------------------------------
+# Sessions: history that outlives the browser
+# ---------------------------------------------------------------------------
+
+
+@app.get("/sessions", response_model=list[SessionSummary])
+def list_sessions(limit: int = 100) -> list[SessionSummary]:
+    """Session summaries, newest first."""
+    return [SessionSummary(**row) for row in store.list_sessions(min(limit, 500))]
+
+
+@app.get("/sessions/stats", response_model=StoreStats)
+def session_stats() -> StoreStats:
+    """Count and on-disk size, for the cache panel."""
+    return StoreStats(**store.store_stats())
+
+
+@app.get("/sessions/{session_id}", response_model=SessionRecord,
+         responses={404: {"model": ErrorResponse}})
+def read_session(session_id: str) -> SessionRecord:
+    row = store.get_session(session_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="No such session.")
+    return SessionRecord(**row)
+
+
+@app.put("/sessions", response_model=SessionRecord)
+def save_session(request: SessionSaveRequest) -> SessionRecord:
+    """Create or update a session. The UI calls this after each stage."""
+    payload = request.model_dump()
+    if payload.get("extraction") is not None:
+        payload["extraction"] = request.extraction.model_dump() if request.extraction else None
+    return SessionRecord(**store.save_session(payload))
+
+
+@app.delete("/sessions/{session_id}", responses={404: {"model": ErrorResponse}})
+def remove_session(session_id: str) -> dict[str, str]:
+    if not store.delete_session(session_id):
+        raise HTTPException(status_code=404, detail="No such session.")
+    return {"status": "deleted"}
+
+
+@app.delete("/sessions")
+def clear_all_sessions() -> dict[str, int]:
+    """Delete every stored session."""
+    return {"deleted": store.clear_sessions()}
 
 
 @app.exception_handler(HTTPException)
