@@ -92,8 +92,15 @@ def test_is_empty_agrees_between_python_and_javascript() -> None:
     assert not mismatches, f"python/js disagree on: {mismatches}"
 
 
+def _referenced_ids(app_js: str) -> set[str]:
+    """Element ids app.js looks up, via either the raw DOM call or the helper."""
+    return set(re.findall(r'getElementById\("([^"]+)"\)', app_js)) | set(
+        re.findall(r'\bel\("([^"]+)"\)', app_js)
+    )
+
+
 def test_every_referenced_element_exists() -> None:
-    """Every getElementById in app.js must match an id in index.html.
+    """Every element app.js looks up must match an id in index.html.
 
     A typo here yields a null element and a UI control that silently does
     nothing, which is how the model dropdown once shipped empty.
@@ -101,11 +108,25 @@ def test_every_referenced_element_exists() -> None:
     app_js = APP_JS.read_text()
     html = (FRONTEND_DIR / "index.html").read_text()
 
-    referenced = set(re.findall(r'getElementById\("([^"]+)"\)', app_js))
+    referenced = _referenced_ids(app_js)
     declared = set(re.findall(r'\bid="([^"]+)"', html))
 
     missing = referenced - declared
     assert not missing, f"app.js references ids not in index.html: {sorted(missing)}"
+
+
+def test_the_element_check_is_not_vacuous() -> None:
+    """Guard the guard.
+
+    Changing how elements are looked up once made the test above match nothing
+    and pass regardless, which is worse than not having it.
+    """
+    referenced = _referenced_ids(APP_JS.read_text())
+
+    assert len(referenced) > 20, (
+        f"only {len(referenced)} element references found -- has the lookup "
+        "pattern changed? Update _referenced_ids()."
+    )
 
 
 def _extract_js_function() -> str:

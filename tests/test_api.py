@@ -24,11 +24,15 @@ def test_health_reports_ffmpeg_and_model() -> None:
     assert "small" in body["available_models"]
 
 
-def test_index_serves_the_recording_page() -> None:
+def test_index_serves_the_console() -> None:
     response = client.get("/")
 
     assert response.status_code == 200
-    assert "Voice Prompt Builder" in response.text
+    assert "VoxPrompt" in response.text
+    # The three panes the layout depends on.
+    assert 'id="sessionList"' in response.text
+    assert 'id="stream"' in response.text
+    assert 'id="modelSelect"' in response.text
 
 
 def test_transcribe_requires_a_file() -> None:

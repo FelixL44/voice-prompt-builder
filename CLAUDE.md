@@ -204,6 +204,21 @@ All settings live in `backend/config.py` and come from `VPB_*` env vars:
   running-but-empty; those are different states and the UI reports them
   differently. An untagged configured name matches `name:latest`, since that is
   how Ollama stores an untagged pull.
+- **The UI is a three-pane console** (sessions / stream / settings) built to a
+  Figma mockup. The product name in the interface is **VoxPrompt**; the repo and
+  Python package stay `voice-prompt-builder`.
+- **Session history lives in `localStorage`, never on the server.** That is what
+  keeps "nothing leaves your machine" true -- the backend is stateless by
+  design. Every storage access is wrapped in try/catch, because localStorage
+  throws in private mode and a broken cache must not take the app down.
+- **No decorative telemetry.** The mockup showed invented figures (WebGPU ON,
+  12ms latency, 98% clarity, 99.8% precision); those slots are filled with real
+  values instead -- the actual engine, the actual elapsed time, the actual cache
+  size. Do not add a metric the system cannot measure.
+- **`tests/test_frontend_parity.py` checks element lookups resolve**, and has a
+  second test asserting that check is not vacuous. Changing how app.js looks up
+  elements once made it match nothing and pass regardless; if the lookup pattern
+  changes again, update `_referenced_ids()`.
 - **The model name is allow-listed** (`ALLOWED_MODELS`) because the per-request
   override reaches the Hugging Face hub; it must never be free-form.
 - **Code, not the model, decides what is missing** in v0.3 (null/empty fields).

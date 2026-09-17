@@ -1,52 +1,28 @@
 /**
- * Voice Prompt Builder -- recording UI (v0.1).
+ * VoxPrompt — agentic console.
  *
- * Records with MediaRecorder, shows a timer and a live level meter, posts the
- * blob to /transcribe, and drops the result into an editable textarea.
+ * Pipeline: capture audio -> POST /transcribe -> POST /analyze -> POST /build.
+ * Every step is inspectable and editable before the next one runs, because the
+ * models paraphrase and mishear and the user is the authority on what they meant.
+ *
+ * Sessions are cached in localStorage. That is per-browser and never reaches
+ * the server, which keeps the "nothing leaves your machine" promise intact.
  */
 "use strict";
 
-const MAX_SECONDS = 300; // 5 minutes, per the product brief.
-const WARN_SECONDS = 270; // Turn the timer amber for the last 30s.
+const MAX_SECONDS = 300;      // 5 minutes, per the product brief.
+const WARN_SECONDS = 270;
+const WAVE_BARS = 56;
+const MAX_VOCABULARY_CHARS = 600;   // Mirrors backend/config.py.
+const SESSION_KEY = "voxprompt.sessions.v1";
+const MAX_SESSIONS = 30;
 
-const el = {
-  banner: document.getElementById("banner"),
-  recordBtn: document.getElementById("recordBtn"),
-  recordLabel: document.getElementById("recordLabel"),
-  recorderHint: document.getElementById("recorderHint"),
-  timer: document.getElementById("timer"),
-  meterFill: document.getElementById("meterFill"),
-  fileInput: document.getElementById("fileInput"),
-  fileName: document.getElementById("fileName"),
-  statusCard: document.getElementById("statusCard"),
-  statusText: document.getElementById("statusText"),
-  statusHint: document.getElementById("statusHint"),
-  spinner: document.getElementById("spinner"),
-  resultCard: document.getElementById("resultCard"),
-  resultMeta: document.getElementById("resultMeta"),
-  transcript: document.getElementById("transcript"),
-  charCount: document.getElementById("charCount"),
-  copyBtn: document.getElementById("copyBtn"),
-  healthInfo: document.getElementById("healthInfo"),
-  modelSelect: document.getElementById("modelSelect"),
-  modelHint: document.getElementById("modelHint"),
-  vocabulary: document.getElementById("vocabulary"),
-  vocabHint: document.getElementById("vocabHint"),
-  analyzeCard: document.getElementById("analyzeCard"),
-  analyzeBtn: document.getElementById("analyzeBtn"),
-  analyzeMeta: document.getElementById("analyzeMeta"),
-  analyzeResult: document.getElementById("analyzeResult"),
-  fieldList: document.getElementById("fieldList"),
-  rawJson: document.getElementById("rawJson"),
-  fieldStatus: document.getElementById("fieldStatus"),
-  copyJsonBtn: document.getElementById("copyJsonBtn"),
-  buildCard: document.getElementById("buildCard"),
-  buildBtn: document.getElementById("buildBtn"),
-  buildMeta: document.getElementById("buildMeta"),
-  buildResult: document.getElementById("buildResult"),
-  promptOutput: document.getElementById("promptOutput"),
-  promptStats: document.getElementById("promptStats"),
-  copyPromptBtn: document.getElementById("copyPromptBtn"),
+/** Rough speed factor per model size, measured on a CPU-only Intel Mac. */
+const MODEL_SPEED = {
+  tiny: { rtf: 0.06, note: "fastest, least accurate" },
+  base: { rtf: 0.10, note: "fast, struggles with jargon" },
+  small: { rtf: 0.40, note: "recommended — much better on names" },
+  medium: { rtf: 1.20, note: "slowest, marginal gain on CPU" },
 };
 
 /**
@@ -83,49 +59,236 @@ function isEmptyValue(value) {
   return NULL_STRINGS.has(String(value).trim().toLowerCase().replace(/\.+$/, ""));
 }
 
-/** Mirrors MAX_VOCABULARY_CHARS in backend/config.py. */
-const MAX_VOCABULARY_CHARS = 600;
+const el = (id) => document.getElementById(id);
 
-/** Rough speed factor per model size, measured on a CPU-only Intel Mac. */
-const MODEL_SPEED = {
-  tiny: { rtf: 0.06, note: "fastest, least accurate" },
-  base: { rtf: 0.10, note: "fast, struggles with jargon" },
-  small: { rtf: 0.40, note: "recommended \u2014 much better on names" },
-  medium: { rtf: 1.20, note: "slowest, marginal gain on CPU" },
+const ui = {
+  sessionList: el("sessionList"), sessionEmpty: el("sessionEmpty"),
+  newSessionBtn: el("newSessionBtn"),
+  statEngine: el("statEngine"), statWhisper: el("statWhisper"), statLatency: el("statLatency"),
+  sandboxLine: el("sandboxLine"), statusDot: el("statusDot"), statusLabel: el("statusLabel"),
+  stream: el("stream"), banner: el("banner"),
+  audioCard: el("audioCard"), wave: el("wave"), audioName: el("audioName"), audioTime: el("audioTime"),
+  workflow: el("workflow"), workflowPill: el("workflowPill"), workflowNote: el("workflowNote"),
+  resultCard: el("resultCard"), resultMeta: el("resultMeta"), transcript: el("transcript"),
+  charCount: el("charCount"), copyBtn: el("copyBtn"), analyzeBtn: el("analyzeBtn"),
+  analyzeCard: el("analyzeCard"), analyzeMeta: el("analyzeMeta"), analyzeResult: el("analyzeResult"),
+  chipRow: el("chipRow"), fieldList: el("fieldList"), fieldStatus: el("fieldStatus"),
+  copyJsonBtn: el("copyJsonBtn"), buildBtn: el("buildBtn"), rawJson: el("rawJson"),
+  buildCard: el("buildCard"), buildMeta: el("buildMeta"), buildResult: el("buildResult"),
+  promptOutput: el("promptOutput"), promptStats: el("promptStats"),
+  refineBtn: el("refineBtn"), copyPromptBtn: el("copyPromptBtn"),
+  statusCard: el("statusCard"), spinner: el("spinner"),
+  statusText: el("statusText"), statusHint: el("statusHint"),
+  fileInput: el("fileInput"), fileName: el("fileName"), recorderHint: el("recorderHint"),
+  recordBtn: el("recordBtn"), recordLabel: el("recordLabel"), meterFill: el("meterFill"),
+  timer: el("timer"), processBtn: el("processBtn"),
+  modelSelect: el("modelSelect"), modelHint: el("modelHint"), targetModel: el("targetModel"),
+  vocabulary: el("vocabulary"), vocabHint: el("vocabHint"),
+  cacheSize: el("cacheSize"), clearCacheBtn: el("clearCacheBtn"),
 };
 
-/** Mutable recording state, grouped so it is obvious what gets reset. */
-const state = {
-  recorder: null,
-  chunks: [],
-  stream: null,
-  audioCtx: null,
-  analyser: null,
-  meterRaf: null,
-  timerId: null,
-  startedAt: 0,
-  busy: false,
+/** Recorder state, grouped so it is obvious what a reset clears. */
+const rec = {
+  recorder: null, chunks: [], stream: null,
+  audioCtx: null, analyser: null, meterRaf: null,
+  timerId: null, startedAt: 0, levels: [],
 };
 
-/** Duration of the most recent recording, used to estimate transcription time. */
-let lastDurationSeconds = 0;
-
-/** Model sizes already resident on the server, per the last /health call. */
+/** The audio waiting to be processed, and the session it belongs to. */
+let pending = null;              // { blob, filename, seconds, levels }
 let warmModels = new Set();
+let current = newSession();
+
+// ---------------------------------------------------------------------------
+// Session cache (localStorage)
+// ---------------------------------------------------------------------------
+
+function newSession() {
+  return {
+    id: `s-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+    title: "Untitled session",
+    created: Date.now(),
+    audioName: "", seconds: 0, levels: [],
+    transcript: "", transcriptMeta: "",
+    extraction: null, analyzeMeta: "",
+    prompt: "", promptStats: "", buildMeta: "",
+  };
+}
+
+/**
+ * Read the cache.
+ *
+ * Every access is guarded: localStorage throws in private mode and in some
+ * embedded webviews, and a broken cache must never take the app down with it.
+ */
+function loadSessions() {
+  try {
+    const raw = localStorage.getItem(SESSION_KEY);
+    const parsed = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveSessions(sessions) {
+  try {
+    localStorage.setItem(SESSION_KEY, JSON.stringify(sessions.slice(0, MAX_SESSIONS)));
+    return true;
+  } catch {
+    // Most likely the quota: waveforms and prompts add up.
+    return false;
+  }
+}
+
+/** Persist the in-progress session, newest first. */
+function persistCurrent() {
+  if (!current.transcript) return;   // Nothing worth remembering yet.
+
+  current.title = deriveTitle(current);
+  const sessions = loadSessions().filter((s) => s.id !== current.id);
+  sessions.unshift(current);
+
+  if (!saveSessions(sessions)) {
+    showBanner("Could not save this session — the browser cache is full.", "warn");
+  }
+  renderSessions();
+  renderCacheSize();
+}
+
+/** A readable name: the extracted goal if there is one, else the first words. */
+function deriveTitle(session) {
+  const goal = session.extraction?.goal;
+  const source = (goal && String(goal).trim()) || session.transcript;
+  if (!source) return "Untitled session";
+
+  const words = source.trim().split(/\s+/).slice(0, 6).join(" ");
+  return words.length > 46 ? `${words.slice(0, 46)}…` : words;
+}
+
+function renderSessions() {
+  const sessions = loadSessions();
+  ui.sessionList.innerHTML = "";
+  ui.sessionEmpty.hidden = sessions.length > 0;
+
+  for (const session of sessions) {
+    const item = document.createElement("li");
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "session-item" + (session.id === current.id ? " active" : "");
+    button.innerHTML =
+      '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" ' +
+      'stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>';
+
+    const title = document.createElement("span");
+    title.className = "session-title";
+    title.textContent = session.title;
+    button.append(title);
+
+    button.addEventListener("click", () => restoreSession(session.id));
+    item.append(button);
+    ui.sessionList.append(item);
+  }
+}
+
+function renderCacheSize() {
+  let bytes = 0;
+  try {
+    bytes = new Blob([localStorage.getItem(SESSION_KEY) || ""]).size;
+  } catch {
+    bytes = 0;
+  }
+  ui.cacheSize.textContent =
+    bytes > 1_048_576 ? `${(bytes / 1_048_576).toFixed(1)} MB` : `${Math.ceil(bytes / 1024)} KB`;
+}
+
+/** Reopen a cached session, restoring every stage that had been reached. */
+function restoreSession(id) {
+  const session = loadSessions().find((s) => s.id === id);
+  if (!session) return;
+
+  current = session;
+  clearBanner();
+  hideStatus();
+  pending = null;
+  ui.processBtn.disabled = true;
+
+  if (session.levels?.length) {
+    drawWave(session.levels);
+    ui.audioName.textContent = session.audioName || "recording";
+    ui.audioTime.textContent = formatTime(session.seconds || 0);
+    ui.audioCard.hidden = false;
+  } else {
+    ui.audioCard.hidden = true;
+  }
+
+  ui.workflow.hidden = false;
+  setWorkflow("done", "Restored from the local session cache.");
+
+  ui.transcript.value = session.transcript || "";
+  ui.resultMeta.textContent = session.transcriptMeta || "";
+  ui.resultCard.hidden = !session.transcript;
+  updateCharCount();
+
+  if (session.extraction) {
+    renderFields(session.extraction, []);
+    ui.analyzeMeta.textContent = session.analyzeMeta || "";
+    ui.analyzeResult.hidden = false;
+    ui.analyzeCard.hidden = false;
+  } else {
+    ui.analyzeCard.hidden = true;
+    ui.analyzeResult.hidden = true;
+  }
+
+  if (session.prompt) {
+    ui.promptOutput.textContent = session.prompt;
+    ui.promptStats.textContent = session.promptStats || "";
+    ui.buildMeta.textContent = session.buildMeta || "";
+    ui.buildMeta.classList.remove("stale");
+    ui.buildResult.hidden = false;
+    ui.buildCard.hidden = false;
+  } else {
+    ui.buildCard.hidden = true;
+    ui.buildResult.hidden = true;
+  }
+
+  renderSessions();
+  ui.stream.scrollTop = 0;
+}
+
+function startNewSession() {
+  current = newSession();
+  pending = null;
+  clearBanner();
+  hideStatus();
+
+  ui.audioCard.hidden = true;
+  ui.workflow.hidden = true;
+  ui.resultCard.hidden = true;
+  ui.analyzeCard.hidden = true;
+  ui.analyzeResult.hidden = true;
+  ui.buildCard.hidden = true;
+  ui.buildResult.hidden = true;
+  ui.transcript.value = "";
+  ui.processBtn.disabled = true;
+  ui.recordLabel.textContent = "Local recorder idle";
+  ui.timer.textContent = "00:00";
+  ui.fileName.textContent = "mp3, wav, m4a, webm";
+
+  renderSessions();
+}
 
 // ---------------------------------------------------------------------------
 // Small UI helpers
 // ---------------------------------------------------------------------------
 
 function showBanner(message, kind = "error") {
-  el.banner.className = `banner ${kind}`;
-  el.banner.innerHTML = message;
-  el.banner.hidden = false;
+  ui.banner.className = `banner ${kind}`;
+  ui.banner.innerHTML = message;
+  ui.banner.hidden = false;
 }
 
-function clearBanner() {
-  el.banner.hidden = true;
-}
+function clearBanner() { ui.banner.hidden = true; }
 
 function formatTime(totalSeconds) {
   const m = Math.floor(totalSeconds / 60);
@@ -134,43 +297,54 @@ function formatTime(totalSeconds) {
 }
 
 function setStatus(text, hint = "") {
-  el.statusCard.hidden = false;
-  el.spinner.hidden = false;
-  el.statusText.textContent = text;
-  el.statusHint.textContent = hint;
+  ui.statusCard.hidden = false;
+  ui.statusText.textContent = text;
+  ui.statusHint.textContent = hint;
 }
 
-function hideStatus() {
-  el.statusCard.hidden = true;
+function hideStatus() { ui.statusCard.hidden = true; }
+
+function setWorkflow(state, note) {
+  const label = { run: "RUNNING", done: "COMPLETED", fail: "FAILED" }[state] || "RUNNING";
+  ui.workflowPill.textContent = label;
+  ui.workflowPill.className = `pill ${state === "done" ? "done" : state === "fail" ? "fail" : ""}`;
+  ui.workflowNote.textContent = note;
 }
 
-/** Disable inputs while a transcription is in flight. */
-function setBusy(busy) {
-  state.busy = busy;
-  el.recordBtn.disabled = busy;
-  el.fileInput.disabled = busy;
+/** Render a level array as waveform bars. */
+function drawWave(levels) {
+  ui.wave.innerHTML = "";
+  if (!levels?.length) return;
+
+  const peak = Math.max(...levels, 0.01);
+  for (const level of levels) {
+    const bar = document.createElement("span");
+    const height = Math.max(8, Math.round((level / peak) * 100));
+    bar.style.height = `${height}%`;
+    if (height > 55) bar.classList.add("hot");
+    ui.wave.append(bar);
+  }
 }
 
 // ---------------------------------------------------------------------------
 // Level meter
 // ---------------------------------------------------------------------------
 
-/** Drive the level meter from the live stream via an AnalyserNode. */
 function startMeter(stream) {
   const AudioCtx = window.AudioContext || window.webkitAudioContext;
-  if (!AudioCtx) return; // Meter is decorative; recording still works without it.
+  if (!AudioCtx) return;   // Meter is decorative; recording still works.
 
-  state.audioCtx = new AudioCtx();
-  const source = state.audioCtx.createMediaStreamSource(stream);
-  state.analyser = state.audioCtx.createAnalyser();
-  state.analyser.fftSize = 1024;
-  source.connect(state.analyser);
+  rec.audioCtx = new AudioCtx();
+  const source = rec.audioCtx.createMediaStreamSource(stream);
+  rec.analyser = rec.audioCtx.createAnalyser();
+  rec.analyser.fftSize = 1024;
+  source.connect(rec.analyser);
 
-  const samples = new Uint8Array(state.analyser.fftSize);
+  const samples = new Uint8Array(rec.analyser.fftSize);
+  let lastCapture = 0;
 
-  const tick = () => {
-    state.analyser.getByteTimeDomainData(samples);
-    // RMS around the 128 midpoint, scaled to something that looks alive.
+  const tick = (now) => {
+    rec.analyser.getByteTimeDomainData(samples);
     let sumSquares = 0;
     for (const sample of samples) {
       const centred = (sample - 128) / 128;
@@ -178,57 +352,81 @@ function startMeter(stream) {
     }
     const rms = Math.sqrt(sumSquares / samples.length);
     const level = Math.min(100, rms * 280);
-    el.meterFill.style.width = `${level}%`;
-    el.meterFill.style.background = level > 80 ? "var(--warn)" : "var(--ok)";
-    state.meterRaf = requestAnimationFrame(tick);
+
+    ui.meterFill.style.width = `${level}%`;
+    ui.meterFill.style.background = level > 80 ? "var(--warn)" : "var(--ok)";
+
+    // Sample periodically to build the waveform shown after recording.
+    if (now - lastCapture > 120) {
+      rec.levels.push(rms);
+      lastCapture = now;
+    }
+    rec.meterRaf = requestAnimationFrame(tick);
   };
-  tick();
+  rec.meterRaf = requestAnimationFrame(tick);
 }
 
 function stopMeter() {
-  if (state.meterRaf) cancelAnimationFrame(state.meterRaf);
-  state.meterRaf = null;
-  if (state.audioCtx) state.audioCtx.close().catch(() => {});
-  state.audioCtx = null;
-  state.analyser = null;
-  el.meterFill.style.width = "0%";
+  if (rec.meterRaf) cancelAnimationFrame(rec.meterRaf);
+  rec.meterRaf = null;
+  if (rec.audioCtx) rec.audioCtx.close().catch(() => {});
+  rec.audioCtx = null;
+  rec.analyser = null;
+  ui.meterFill.style.width = "0%";
+}
+
+/** Reduce the captured levels to a fixed number of bars. */
+function summariseLevels(levels) {
+  if (!levels.length) return [];
+  const out = [];
+  const bucket = levels.length / WAVE_BARS;
+  for (let i = 0; i < WAVE_BARS; i += 1) {
+    const slice = levels.slice(Math.floor(i * bucket), Math.max(Math.floor((i + 1) * bucket), 1));
+    out.push(slice.length ? Math.max(...slice) : 0);
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------------------
 // Recording
 // ---------------------------------------------------------------------------
 
-/** Pick a container the browser will actually give us. */
 function pickMimeType() {
   const candidates = [
     "audio/webm;codecs=opus",
     "audio/webm",
-    "audio/mp4", // Safari
+    "audio/mp4",           // Safari
     "audio/ogg;codecs=opus",
   ];
   return candidates.find((t) => MediaRecorder.isTypeSupported(t)) || "";
 }
 
-function startTimer() {
-  state.startedAt = Date.now();
-  el.timer.classList.add("active");
+function extensionFor(mimeType) {
+  if (mimeType.includes("mp4")) return "m4a";
+  if (mimeType.includes("ogg")) return "ogg";
+  return "webm";
+}
 
-  state.timerId = setInterval(() => {
-    const elapsed = (Date.now() - state.startedAt) / 1000;
-    lastDurationSeconds = elapsed;
-    el.timer.textContent = formatTime(elapsed);
-    el.timer.classList.toggle("limit", elapsed >= WARN_SECONDS);
+function startTimer() {
+  rec.startedAt = Date.now();
+  ui.timer.classList.add("active");
+
+  rec.timerId = setInterval(() => {
+    const elapsed = (Date.now() - rec.startedAt) / 1000;
+    ui.timer.textContent = formatTime(elapsed);
     if (elapsed >= MAX_SECONDS) {
-      showBanner("Reached the 5 minute limit &mdash; stopping the recording.", "warn");
+      showBanner("Reached the 5 minute limit — stopping the recording.", "warn");
       stopRecording();
+    } else if (elapsed >= WARN_SECONDS) {
+      ui.recordLabel.textContent = `Recording — ${Math.ceil(MAX_SECONDS - elapsed)}s left`;
     }
   }, 200);
 }
 
 function stopTimer() {
-  if (state.timerId) clearInterval(state.timerId);
-  state.timerId = null;
-  el.timer.classList.remove("active", "limit");
+  if (rec.timerId) clearInterval(rec.timerId);
+  rec.timerId = null;
+  ui.timer.classList.remove("active");
 }
 
 async function startRecording() {
@@ -236,7 +434,7 @@ async function startRecording() {
 
   if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) {
     showBanner(
-      "This browser cannot record audio. Use Chrome, Edge or Safari &mdash; " +
+      "This browser cannot record audio. Use Chrome, Firefox, Edge or Safari — " +
       "or upload an audio file instead."
     );
     return;
@@ -251,7 +449,7 @@ async function startRecording() {
     showBanner(
       denied
         ? "Microphone access was denied. Allow it in your browser's site settings " +
-          "(and in System Settings &rsaquo; Privacy &amp; Security &rsaquo; Microphone), then reload."
+          "(and in System Settings › Privacy &amp; Security › Microphone), then reload."
         : `Could not open the microphone: ${err.name}. Is another app using it?`
     );
     return;
@@ -259,318 +457,186 @@ async function startRecording() {
 
   const mimeType = pickMimeType();
   try {
-    state.recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+    rec.recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
   } catch (err) {
     stream.getTracks().forEach((t) => t.stop());
     showBanner(`Could not start the recorder: ${err.message}`);
     return;
   }
 
-  state.stream = stream;
-  state.chunks = [];
+  rec.stream = stream;
+  rec.chunks = [];
+  rec.levels = [];
 
-  state.recorder.addEventListener("dataavailable", (event) => {
-    if (event.data.size > 0) state.chunks.push(event.data);
+  rec.recorder.addEventListener("dataavailable", (event) => {
+    if (event.data.size > 0) rec.chunks.push(event.data);
   });
 
-  state.recorder.addEventListener("error", (event) => {
+  rec.recorder.addEventListener("error", (event) => {
     showBanner(`Recording error: ${event.error?.message || "unknown"}`);
     cleanupStream();
     resetRecordButton();
   });
 
-  state.recorder.addEventListener("stop", () => {
-    const type = state.recorder.mimeType || mimeType || "audio/webm";
-    const blob = new Blob(state.chunks, { type });
+  rec.recorder.addEventListener("stop", () => {
+    const seconds = (Date.now() - rec.startedAt) / 1000;
+    const type = rec.recorder.mimeType || mimeType || "audio/webm";
+    const blob = new Blob(rec.chunks, { type });
+    const levels = summariseLevels(rec.levels);
+
     cleanupStream();
     resetRecordButton();
+
     if (blob.size === 0) {
       showBanner("The recording came out empty. Check your microphone and try again.");
       return;
     }
-    sendForTranscription(blob, `recording.${extensionFor(type)}`);
+    stageAudio(blob, `recording.${extensionFor(type)}`, seconds, levels);
   });
 
-  state.recorder.start(250); // Flush chunks regularly so nothing is lost.
-  lastDurationSeconds = 0;
+  rec.recorder.start(250);   // Flush chunks regularly so nothing is lost.
   startTimer();
   startMeter(stream);
 
-  el.recordBtn.classList.add("recording");
-  el.recordLabel.textContent = "Stop recording";
-  el.recorderHint.textContent = "Recording\u2026 click stop when you are done.";
+  ui.recordBtn.classList.add("recording");
+  ui.recordBtn.setAttribute("aria-label", "Stop recording");
+  ui.recordLabel.textContent = "Local recorder active";
+  ui.recorderHint.textContent = "Recording — click the button again to stop.";
 }
 
 function stopRecording() {
-  if (state.recorder && state.recorder.state !== "inactive") {
-    state.recorder.stop(); // The "stop" handler does the rest.
-  }
+  if (rec.recorder && rec.recorder.state !== "inactive") rec.recorder.stop();
 }
 
 function cleanupStream() {
   stopTimer();
   stopMeter();
-  if (state.stream) state.stream.getTracks().forEach((t) => t.stop());
-  state.stream = null;
+  if (rec.stream) rec.stream.getTracks().forEach((t) => t.stop());
+  rec.stream = null;
 }
 
 function resetRecordButton() {
-  el.recordBtn.classList.remove("recording");
-  el.recordLabel.textContent = "Start recording";
-  el.recorderHint.textContent =
-    "Up to 5 minutes. Just ramble — you can fix the text afterwards.";
+  ui.recordBtn.classList.remove("recording");
+  ui.recordBtn.setAttribute("aria-label", "Start recording");
+  ui.recordLabel.textContent = "Local recorder idle";
+  ui.recorderHint.textContent = "Click record to start local input streaming.";
 }
 
-function extensionFor(mimeType) {
-  if (mimeType.includes("mp4")) return "m4a";
-  if (mimeType.includes("ogg")) return "ogg";
-  return "webm";
+/** Hold audio until the user presses Process, matching the composer flow. */
+function stageAudio(blob, filename, seconds, levels) {
+  pending = { blob, filename, seconds, levels };
+
+  current.audioName = filename;
+  current.seconds = seconds;
+  current.levels = levels;
+
+  drawWave(levels);
+  ui.audioName.textContent = filename;
+  ui.audioTime.textContent = formatTime(seconds);
+  ui.audioCard.hidden = false;
+
+  ui.processBtn.disabled = false;
+  ui.recordLabel.textContent = "Ready to process";
+  ui.recorderHint.textContent = "Press Process audio to transcribe locally.";
 }
 
 // ---------------------------------------------------------------------------
-// Transcription
+// Step 1 — transcription
 // ---------------------------------------------------------------------------
 
-async function sendForTranscription(blob, filename) {
-  setBusy(true);
-  el.resultCard.hidden = true;
+async function processAudio() {
+  if (!pending) return;
+
   clearBanner();
+  ui.processBtn.disabled = true;
+  ui.recordBtn.disabled = true;
+  ui.workflow.hidden = false;
+  setWorkflow("run", "Whisper is processing the audio locally…");
 
+  const chosen = ui.modelSelect.value || "base";
+  const rtf = MODEL_SPEED[chosen]?.rtf ?? 0.1;
+  const estimate = Math.max(2, Math.round((pending.seconds || 30) * rtf));
   setStatus(
-    "Transcribing…",
-    `${(blob.size / 1024 / 1024).toFixed(1)} MB. The first run downloads the model, ` +
-    `which takes a minute; after that expect roughly a tenth of the audio length.`
+    `Transcribing with ${chosen}…`,
+    warmModels.has(chosen)
+      ? `Roughly ${estimate}s.`
+      : `Roughly ${estimate}s once the model is ready. First use of ${chosen} loads it first.`
   );
 
   const form = new FormData();
-  form.append("audio", blob, filename);
-  if (el.modelSelect.value) form.append("model", el.modelSelect.value);
-  if (el.vocabulary.value.trim()) form.append("vocabulary", el.vocabulary.value.trim());
+  form.append("audio", pending.blob, pending.filename);
+  form.append("model", chosen);
+  if (ui.vocabulary.value.trim()) form.append("vocabulary", ui.vocabulary.value.trim());
 
   try {
     const response = await fetch("/transcribe", { method: "POST", body: form });
     const payload = await response.json().catch(() => null);
 
     if (!response.ok) {
-      const detail = payload?.detail || `Request failed (${response.status}).`;
-      showBanner(detail);
-      hideStatus();
+      setWorkflow("fail", "Transcription failed.");
+      showBanner(payload?.detail || `Transcription failed (${response.status}).`);
       return;
     }
-    showResult(payload);
+    showTranscript(payload);
   } catch (err) {
-    showBanner(
-      `Could not reach the backend: ${err.message}. Is the server still running?`
-    );
-    hideStatus();
+    setWorkflow("fail", "Could not reach the backend.");
+    showBanner(`Could not reach the backend: ${err.message}. Is the server still running?`);
   } finally {
-    setBusy(false);
+    hideStatus();
+    ui.recordBtn.disabled = false;
+    ui.processBtn.disabled = !pending;
   }
 }
 
-function showResult(payload) {
-  hideStatus();
-  el.transcript.value = payload.text;
-  el.resultMeta.textContent =
-    `${formatTime(payload.duration)} audio · ${payload.elapsed_s}s ` +
-    `· ${payload.model} · ${payload.language}`;
-  el.resultCard.hidden = false;
-  el.analyzeCard.hidden = false;
-  el.analyzeResult.hidden = true; // Stale structure would mislead.
-  el.analyzeMeta.textContent = "";
+function showTranscript(payload) {
+  ui.transcript.value = payload.text;
+  ui.resultMeta.textContent = `${payload.text.length} chars`;
+  ui.resultCard.hidden = false;
+
+  // A new transcript invalidates whatever was derived from the old one.
+  ui.analyzeCard.hidden = true;
+  ui.analyzeResult.hidden = true;
+  ui.buildCard.hidden = true;
+  ui.buildResult.hidden = true;
+
+  setWorkflow(
+    "done",
+    `Transcribed ${payload.duration.toFixed(1)}s of audio in ${payload.elapsed_s}s ` +
+    `with ${payload.model}.`
+  );
+  ui.statLatency.textContent = `${payload.elapsed_s}s`;
+
+  current.transcript = payload.text;
+  current.transcriptMeta = ui.resultMeta.textContent;
+  current.extraction = null;
+  current.prompt = "";
+  persistCurrent();
+
   updateCharCount();
-  el.transcript.focus();
+  ui.transcript.focus();
+  checkHealth();   // Refresh which models are warm.
 }
 
 function updateCharCount() {
-  const chars = el.transcript.value.length;
-  const words = el.transcript.value.trim().split(/\s+/).filter(Boolean).length;
-  el.charCount.textContent = `${words} words · ${chars} characters`;
+  const text = ui.transcript.value;
+  const words = text.trim().split(/\s+/).filter(Boolean).length;
+  ui.charCount.textContent = `${words} words · ${text.length} characters`;
 }
 
 // ---------------------------------------------------------------------------
-// Wiring
+// Step 2 — variable extraction
 // ---------------------------------------------------------------------------
 
-el.recordBtn.addEventListener("click", () => {
-  if (state.busy) return;
-  const isRecording = state.recorder && state.recorder.state === "recording";
-  if (isRecording) stopRecording();
-  else startRecording();
-});
-
-el.fileInput.addEventListener("change", (event) => {
-  const file = event.target.files?.[0];
-  if (!file) return;
-  el.fileName.textContent = file.name;
-  el.timer.textContent = "00:00";
-  lastDurationSeconds = file.size / 4000; // Rough: ~32 kbps compressed audio.
-  sendForTranscription(file, file.name);
-  event.target.value = ""; // Allow re-picking the same file.
-});
-
-el.transcript.addEventListener("input", updateCharCount);
-
-el.copyBtn.addEventListener("click", async () => {
-  try {
-    await navigator.clipboard.writeText(el.transcript.value);
-    el.copyBtn.textContent = "Copied";
-    setTimeout(() => (el.copyBtn.textContent = "Copy"), 1400);
-  } catch {
-    el.transcript.select(); // Clipboard API needs a secure context; fall back.
-    showBanner("Could not copy automatically &mdash; the text is selected instead.", "warn");
-  }
-});
-
-/**
- * Warn about the LLM before someone records five minutes for nothing.
- *
- * A reachable Ollama without the configured model fails only at the Analyze
- * step, so the two cases are reported separately and specifically.
- */
-function reportLlmState(health) {
-  if (!health.ffmpeg) return; // The ffmpeg banner is the more urgent one.
-
-  if (!health.ollama) {
-    showBanner(
-      "<strong>Ollama is not running</strong>, so the Analyze step will fail. " +
-      "Start it with <code>ollama serve</code>. Recording still works.",
-      "warn"
-    );
-  } else if (!health.ollama_model_available) {
-    showBanner(
-      `<strong>Model <code>${health.ollama_model}</code> is not pulled.</strong> ` +
-      `The Analyze step will fail until you run ` +
-      `<code>ollama pull ${health.ollama_model}</code>. Recording still works.`,
-      "warn"
-    );
-  }
-}
-
-/** Warn about a missing ffmpeg before someone records five minutes for nothing. */
-async function checkHealth() {
-  try {
-    const response = await fetch("/health");
-    const health = await response.json();
-    if (!health.ffmpeg) {
-      showBanner(
-        "<strong>ffmpeg is not installed.</strong> Transcription will fail until " +
-        "you run <code>brew install ffmpeg</code> and restart the server."
-      );
-    }
-    el.healthInfo.textContent = `whisper: ${health.whisper_model} · local only`;
-  } catch {
-    el.healthInfo.textContent = "backend unreachable";
-  }
-}
-
-
-/**
- * Fill the model dropdown.
- *
- * Called once at load with the built-in sizes so the control is never empty,
- * then again from /health to mark which models are already warm. An empty
- * dropdown would leave the user unable to pick a model at all, so this must
- * not depend on the request succeeding.
- */
-function populateModels(health = null) {
-  const options = health?.available_models?.length
-    ? health.available_models
-    : Object.keys(MODEL_SPEED);
-
-  // Keep the user's choice across the /health refresh.
-  const previous = el.modelSelect.value;
-
-  warmModels = new Set(health?.loaded_models ?? []);
-
-  el.modelSelect.innerHTML = "";
-  for (const name of options) {
-    const option = document.createElement("option");
-    option.value = name;
-    option.textContent = health?.loaded_models?.includes(name)
-      ? `${name} (ready)`
-      : name;
-    el.modelSelect.append(option);
-  }
-
-  // "small" is the best speed/accuracy trade-off on a CPU-only Mac.
-  const fallback = options.includes("small") ? "small" : options[0];
-  el.modelSelect.value = options.includes(previous) ? previous : fallback;
-  updateModelHint();
-}
-
-function updateModelHint() {
-  const info = MODEL_SPEED[el.modelSelect.value];
-  if (!info) return;
-  const perFiveMin = Math.round(info.rtf * 300);
-  el.modelHint.textContent = `${info.note} \u00b7 ~${perFiveMin}s per 5 min of audio`;
-}
-
-el.modelSelect.addEventListener("change", updateModelHint);
-
-/**
- * Warn when the hint stops looking like a word list.
- *
- * The hint shares Whisper's 224-token window with the audio context, and
- * pasting prose in here biases the decoder towards continuing that prose
- * instead of sharpening rare words. The backend truncates regardless; this
- * just makes the limit visible rather than silent.
- */
-function updateVocabHint() {
-  const value = el.vocabulary.value;
-  const tooLong = value.length > MAX_VOCABULARY_CHARS;
-  const looksLikeProse = value.split(/\s+/).filter(Boolean).length > 40;
-
-  el.vocabHint.classList.toggle("over-limit", tooLong || looksLikeProse);
-
-  if (tooLong) {
-    el.vocabHint.innerHTML =
-      `Too long \u2014 only the first ${MAX_VOCABULARY_CHARS} characters are used ` +
-      `(${value.length} entered). Keep it to names and jargon.`;
-  } else if (looksLikeProse) {
-    el.vocabHint.innerHTML =
-      "This looks like prose. Use only the <strong>terms</strong> Whisper " +
-      "mishears \u2014 sentences here can bias the transcript.";
-  } else {
-    el.vocabHint.innerHTML =
-      "Comma-separated <strong>terms</strong>, not sentences. " +
-      "Free \u2014 costs no extra time.";
-  }
-}
-
-el.vocabulary.addEventListener("input", updateVocabHint);
-
-// Populate from the built-in list first so the control is usable immediately,
-// then let /health refine it with which models are already warm.
-populateModels();
-checkHealth();
-
-
-// ---------------------------------------------------------------------------
-// Analysis
-// ---------------------------------------------------------------------------
-
-/**
- * Build the editable control for one field.
- *
- * Every field is editable, not just the empty ones: the model paraphrases, and
- * the user is the authority on what they meant. For a field the backend
- * reported missing, the question becomes the placeholder -- answering it is
- * just typing, and skipping it is just leaving it blank.
- */
 function buildFieldInput(name, value, question) {
   const spec = FIELDS[name];
   const input = document.createElement("textarea");
 
   input.className = "field-input";
   input.dataset.field = name;
+  input.id = `field-${name}`;
   input.rows = spec.list ? 3 : 2;
   input.value = spec.list ? (value || []).join("\n") : (value ?? "");
-  input.placeholder = question
-    ? question
-    : spec.list
-      ? "One per line"
-      : `Add ${spec.label.toLowerCase()}\u2026`;
+  input.placeholder = question || (spec.list ? "One per line" : `Add ${spec.label.toLowerCase()}…`);
 
   input.addEventListener("input", () => {
     autoGrow(input);
@@ -579,23 +645,22 @@ function buildFieldInput(name, value, question) {
   return input;
 }
 
-/** Keep a textarea tall enough for its content, so nothing is hidden. */
 function autoGrow(input) {
   input.style.height = "auto";
   input.style.height = `${Math.min(input.scrollHeight, 260)}px`;
 }
 
-/** Read the edited fields back out of the DOM. The source of truth for v0.4. */
+/** Read the edited fields back out of the DOM. The source of truth for /build. */
 function readExtraction() {
   const extraction = {};
   for (const [name, spec] of Object.entries(FIELDS)) {
-    const input = el.fieldList.querySelector(`[data-field="${name}"]`);
+    const input = ui.fieldList.querySelector(`[data-field="${name}"]`);
     const raw = input ? input.value : "";
 
     if (spec.list) {
       extraction[name] = raw
         .split("\n")
-        .map((line) => line.replace(/^[-*\u2022]\s*/, "").trim())
+        .map((line) => line.replace(/^[-*•]\s*/, "").trim())
         .filter((line) => !isEmptyValue(line));
     } else {
       extraction[name] = isEmptyValue(raw) ? null : raw.trim();
@@ -609,35 +674,42 @@ function refreshAnalysisState() {
   const extraction = readExtraction();
   let filled = 0;
 
-  for (const name of Object.keys(FIELDS)) {
+  ui.chipRow.innerHTML = "";
+  for (const [name, spec] of Object.entries(FIELDS)) {
     const empty = isEmptyValue(extraction[name]);
     if (!empty) filled += 1;
 
-    const row = el.fieldList.querySelector(`[data-row="${name}"]`);
+    const row = ui.fieldList.querySelector(`[data-row="${name}"]`);
     if (row) row.classList.toggle("is-missing", empty);
+
+    const chip = document.createElement("span");
+    chip.className = `chip ${empty ? "empty" : "filled"}`;
+    chip.textContent = `${empty ? "○" : "✓"} [${name}]`;
+    ui.chipRow.append(chip);
   }
 
   const total = Object.keys(FIELDS).length;
-  el.fieldStatus.textContent =
+  ui.fieldStatus.textContent =
     filled === total
       ? `All ${total} fields filled`
-      : `${filled} of ${total} fields filled \u00b7 blanks are fine, they are simply left out`;
+      : `${filled} of ${total} filled · blanks are fine, they are simply left out`;
 
-  el.rawJson.textContent = JSON.stringify(extraction, null, 2);
+  ui.rawJson.textContent = JSON.stringify(extraction, null, 2);
 
   // A prompt built before this edit no longer matches the fields above.
-  if (!el.buildResult.hidden) {
-    el.buildMeta.textContent = "out of date \u2014 rebuild";
-    el.buildMeta.classList.add("stale");
+  if (!ui.buildResult.hidden) {
+    ui.buildMeta.textContent = "out of date — rebuild";
+    ui.buildMeta.classList.add("stale");
   }
+
+  current.extraction = extraction;
   return extraction;
 }
 
-/** Show the extraction as an editable form. */
-function showAnalysis(payload) {
-  const questionFor = new Map(payload.missing.map((m) => [m.field, m.question]));
+function renderFields(extraction, missing) {
+  const questionFor = new Map((missing || []).map((m) => [m.field, m.question]));
 
-  el.fieldList.innerHTML = "";
+  ui.fieldList.innerHTML = "";
   for (const [name, spec] of Object.entries(FIELDS)) {
     const row = document.createElement("li");
     row.dataset.row = name;
@@ -647,44 +719,32 @@ function showAnalysis(payload) {
     label.textContent = spec.label;
     label.htmlFor = `field-${name}`;
 
-    const input = buildFieldInput(name, payload.extraction[name], questionFor.get(name));
-    input.id = `field-${name}`;
-
-    row.append(label, input);
-    el.fieldList.append(row);
+    row.append(label, buildFieldInput(name, extraction[name], questionFor.get(name)));
+    ui.fieldList.append(row);
   }
 
-  el.analyzeMeta.textContent = `${payload.elapsed_s}s \u00b7 ${payload.model}`;
-  el.analyzeResult.hidden = false;
-  el.buildCard.hidden = false;
-
   refreshAnalysisState();
-  // Size the boxes once they are laid out, not while still hidden.
-  el.fieldList.querySelectorAll(".field-input").forEach(autoGrow);
+  ui.fieldList.querySelectorAll(".field-input").forEach(autoGrow);
 }
 
-el.analyzeBtn.addEventListener("click", async () => {
-  const transcript = el.transcript.value.trim();
+async function analyzeTranscript() {
+  const transcript = ui.transcript.value.trim();
   if (!transcript) {
     showBanner("There is no transcript to analyse yet.", "warn");
     return;
   }
 
   // Re-analysing replaces every field, so do not silently bin typed answers.
-  if (!el.analyzeResult.hidden) {
-    const confirmed = window.confirm(
-      "Re-analysing replaces all fields and discards your edits. Continue?"
-    );
-    if (!confirmed) return;
-  }
+  if (!ui.analyzeResult.hidden && !window.confirm(
+    "Re-extracting replaces all variables and discards your edits. Continue?"
+  )) return;
 
   clearBanner();
-  el.analyzeBtn.disabled = true;
-  el.analyzeBtn.textContent = "Analyzing\u2026";
+  ui.analyzeBtn.disabled = true;
+  setWorkflow("run", "Extracting structured variables with the local model…");
   setStatus(
-    "Extracting structure\u2026",
-    "The local model reads the whole transcript. Expect one to two minutes " +
-    "for a long recording on a CPU."
+    "Extracting variables…",
+    "The local model reads the whole transcript. One to two minutes for a long recording."
   );
 
   try {
@@ -696,38 +756,36 @@ el.analyzeBtn.addEventListener("click", async () => {
     const payload = await response.json().catch(() => null);
 
     if (!response.ok) {
-      showBanner(payload?.detail || `Analysis failed (${response.status}).`);
+      setWorkflow("fail", "Extraction failed.");
+      showBanner(payload?.detail || `Extraction failed (${response.status}).`);
       return;
     }
-    showAnalysis(payload);
+
+    ui.analyzeCard.hidden = false;
+    renderFields(payload.extraction, payload.missing);
+    ui.analyzeMeta.textContent = `${payload.elapsed_s}s · ${payload.model}`;
+    ui.analyzeResult.hidden = false;
+    setWorkflow("done", `Structured into ${Object.keys(FIELDS).length} variables.`);
+
+    current.transcript = transcript;
+    current.analyzeMeta = ui.analyzeMeta.textContent;
+    persistCurrent();
   } catch (err) {
+    setWorkflow("fail", "Could not reach the backend.");
     showBanner(`Could not reach the backend: ${err.message}`);
   } finally {
     hideStatus();
-    el.analyzeBtn.disabled = false;
-    el.analyzeBtn.textContent = "Analyze transcript";
+    ui.analyzeBtn.disabled = false;
   }
-});
-
-
-el.copyJsonBtn.addEventListener("click", async () => {
-  try {
-    await navigator.clipboard.writeText(JSON.stringify(readExtraction(), null, 2));
-    el.copyJsonBtn.textContent = "Copied";
-    setTimeout(() => (el.copyJsonBtn.textContent = "Copy JSON"), 1400);
-  } catch {
-    showBanner("Could not copy to the clipboard.", "warn");
-  }
-});
-
+}
 
 // ---------------------------------------------------------------------------
-// Prompt building
+// Step 3 — prompt assembly
 // ---------------------------------------------------------------------------
 
-el.buildBtn.addEventListener("click", async () => {
+async function buildPrompt() {
   clearBanner();
-  el.buildBtn.disabled = true;
+  ui.buildBtn.disabled = true;
 
   try {
     const response = await fetch("/build", {
@@ -741,37 +799,231 @@ el.buildBtn.addEventListener("click", async () => {
       showBanner(payload?.detail || `Could not build the prompt (${response.status}).`);
       return;
     }
-    showPrompt(payload);
+
+    ui.buildCard.hidden = false;
+    ui.promptOutput.textContent = payload.prompt;
+    ui.promptStats.textContent =
+      `~${payload.estimated_tokens} tokens · ${payload.characters} characters ` +
+      `· ${payload.sections.length} sections`;
+    ui.buildMeta.textContent = payload.sections.join(", ");
+    ui.buildMeta.classList.remove("stale");
+    ui.buildResult.hidden = false;
+    ui.buildBtn.textContent = "Rebuild prompt";
+
+    current.prompt = payload.prompt;
+    current.promptStats = ui.promptStats.textContent;
+    current.buildMeta = ui.buildMeta.textContent;
+    persistCurrent();
+
+    ui.buildCard.scrollIntoView({ behavior: "smooth", block: "nearest" });
   } catch (err) {
     showBanner(`Could not reach the backend: ${err.message}`);
   } finally {
-    el.buildBtn.disabled = false;
+    ui.buildBtn.disabled = false;
   }
-});
-
-function showPrompt(payload) {
-  el.promptOutput.textContent = payload.prompt;
-  el.promptStats.textContent =
-    `~${payload.estimated_tokens} tokens \u00b7 ${payload.characters} characters ` +
-    `\u00b7 ${payload.sections.length} sections`;
-
-  el.buildMeta.textContent = payload.sections.join(", ");
-  el.buildMeta.classList.remove("stale");
-  el.buildResult.hidden = false;
-  el.buildBtn.textContent = "Rebuild prompt";
 }
 
-el.copyPromptBtn.addEventListener("click", async () => {
+// ---------------------------------------------------------------------------
+// Clipboard
+// ---------------------------------------------------------------------------
+
+async function copyText(text, button, label) {
   try {
-    await navigator.clipboard.writeText(el.promptOutput.textContent);
-    el.copyPromptBtn.textContent = "Copied";
-    setTimeout(() => (el.copyPromptBtn.textContent = "Copy prompt"), 1400);
+    await navigator.clipboard.writeText(text);
+    const original = button.textContent;
+    button.textContent = "Copied";
+    setTimeout(() => (button.textContent = original), 1400);
   } catch {
-    // Clipboard needs a secure context; select the text so Cmd+C still works.
-    const range = document.createRange();
-    range.selectNodeContents(el.promptOutput);
-    window.getSelection().removeAllRanges();
-    window.getSelection().addRange(range);
-    showBanner("Could not copy automatically \u2014 the prompt is selected instead.", "warn");
+    // The clipboard API needs a secure context; say so rather than failing mutely.
+    showBanner(`Could not copy the ${label} automatically. Select it and press Cmd+C.`, "warn");
   }
+}
+
+// ---------------------------------------------------------------------------
+// Settings + health
+// ---------------------------------------------------------------------------
+
+function populateModels(health = null) {
+  const options = health?.available_models?.length
+    ? health.available_models
+    : Object.keys(MODEL_SPEED);
+
+  warmModels = new Set(health?.loaded_models ?? []);
+  const previous = ui.modelSelect.value;
+
+  ui.modelSelect.innerHTML = "";
+  for (const name of options) {
+    const option = document.createElement("option");
+    option.value = name;
+    option.textContent = warmModels.has(name) ? `${name} (ready)` : name;
+    ui.modelSelect.append(option);
+  }
+
+  const fallback = options.includes("small") ? "small" : options[0];
+  ui.modelSelect.value = options.includes(previous) ? previous : fallback;
+  updateModelHint();
+}
+
+function updateModelHint() {
+  const info = MODEL_SPEED[ui.modelSelect.value];
+  if (!info) return;
+  ui.modelHint.textContent = `${info.note} · ~${Math.round(info.rtf * 300)}s per 5 min of audio`;
+}
+
+/**
+ * Warn about the LLM before someone records five minutes for nothing.
+ *
+ * A reachable Ollama without the configured model fails only at the extraction
+ * step, so the two cases are reported separately and specifically.
+ */
+function reportLlmState(health) {
+  if (!health.ffmpeg) {
+    showBanner(
+      "<strong>ffmpeg is not installed.</strong> Transcription will fail until you run " +
+      "<code>brew install ffmpeg</code> and restart the server."
+    );
+    return;
+  }
+  if (!health.ollama) {
+    showBanner(
+      "<strong>Ollama is not running</strong>, so variable extraction will fail. " +
+      "Start it with <code>ollama serve</code>. Recording still works.",
+      "warn"
+    );
+  } else if (!health.ollama_model_available) {
+    showBanner(
+      `<strong>Model <code>${health.ollama_model}</code> is not pulled.</strong> ` +
+      `Extraction will fail until you run <code>ollama pull ${health.ollama_model}</code>.`,
+      "warn"
+    );
+  }
+}
+
+function setSandboxStatus(health) {
+  const problems = [];
+  if (!health.ffmpeg) problems.push("ffmpeg missing");
+  if (!health.ollama) problems.push("Ollama offline");
+  else if (!health.ollama_model_available) problems.push("model not pulled");
+
+  const ok = problems.length === 0;
+  ui.statusDot.className = `dot-status ${ok ? "ok" : health.ffmpeg ? "warn" : "bad"}`;
+  ui.statusLabel.textContent = ok ? "Sandbox secure" : problems.join(", ");
+  ui.sandboxLine.textContent = health.model_warming
+    ? `Loading ${health.whisper_model}… everything runs on this machine.`
+    : `Whisper (${health.whisper_model}) and ${health.ollama_model}, running entirely offline.`;
+}
+
+async function checkHealth() {
+  try {
+    const response = await fetch("/health");
+    const health = await response.json();
+
+    populateModels(health);
+    setSandboxStatus(health);
+    reportLlmState(health);
+
+    ui.targetModel.textContent = health.ollama_model || "not configured";
+    // Real values, not decoration: this is what is actually running.
+    ui.statEngine.textContent = "CTranslate2 int8 · CPU";
+    ui.statWhisper.textContent = health.model_warming
+      ? `${health.whisper_model} (loading)`
+      : health.whisper_model;
+
+    if (health.model_warming) setTimeout(checkHealth, 5000);
+  } catch {
+    ui.statusDot.className = "dot-status bad";
+    ui.statusLabel.textContent = "Backend unreachable";
+    ui.statEngine.textContent = "offline";
+  }
+}
+
+/**
+ * Warn when the hint stops looking like a word list.
+ *
+ * The hint shares Whisper's 224-token window with the audio context, so prose
+ * here biases the decoder instead of sharpening rare words. The backend
+ * truncates regardless; this makes the limit visible rather than silent.
+ */
+function updateVocabHint() {
+  const value = ui.vocabulary.value;
+  const tooLong = value.length > MAX_VOCABULARY_CHARS;
+  const looksLikeProse = value.split(/\s+/).filter(Boolean).length > 40;
+
+  ui.vocabHint.classList.toggle("over-limit", tooLong || looksLikeProse);
+
+  if (tooLong) {
+    ui.vocabHint.innerHTML =
+      `Too long — only the first ${MAX_VOCABULARY_CHARS} characters are used ` +
+      `(${value.length} entered). Keep it to names and jargon.`;
+  } else if (looksLikeProse) {
+    ui.vocabHint.innerHTML =
+      "This looks like prose. Use only the <strong>terms</strong> Whisper mishears " +
+      "— sentences here can bias the transcript.";
+  } else {
+    ui.vocabHint.innerHTML =
+      "Custom technical keywords or spelling targets to bias the Whisper engine. " +
+      "Comma-separated <strong>terms</strong>, not sentences.";
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Wiring
+// ---------------------------------------------------------------------------
+
+ui.recordBtn.addEventListener("click", () => {
+  if (rec.recorder && rec.recorder.state === "recording") stopRecording();
+  else startRecording();
 });
+
+ui.processBtn.addEventListener("click", processAudio);
+ui.analyzeBtn.addEventListener("click", analyzeTranscript);
+ui.buildBtn.addEventListener("click", buildPrompt);
+
+ui.fileInput.addEventListener("change", (event) => {
+  const file = event.target.files?.[0];
+  if (!file) return;
+
+  ui.fileName.textContent = file.name;
+  // Uploads carry no level data, so the waveform stays empty until transcribed.
+  stageAudio(file, file.name, 0, []);
+  ui.audioTime.textContent = `${(file.size / 1_048_576).toFixed(1)} MB`;
+  event.target.value = "";   // Allow re-picking the same file.
+});
+
+ui.transcript.addEventListener("input", () => {
+  updateCharCount();
+  current.transcript = ui.transcript.value;
+});
+
+ui.refineBtn.addEventListener("click", () => {
+  ui.analyzeCard.scrollIntoView({ behavior: "smooth", block: "start" });
+  ui.fieldList.querySelector(".field-input")?.focus();
+});
+
+ui.copyBtn.addEventListener("click", () => copyText(ui.transcript.value, ui.copyBtn, "transcript"));
+ui.copyJsonBtn.addEventListener("click", () =>
+  copyText(JSON.stringify(readExtraction(), null, 2), ui.copyJsonBtn, "JSON"));
+ui.copyPromptBtn.addEventListener("click", () =>
+  copyText(ui.promptOutput.textContent, ui.copyPromptBtn, "prompt"));
+
+ui.modelSelect.addEventListener("change", updateModelHint);
+ui.vocabulary.addEventListener("input", updateVocabHint);
+ui.newSessionBtn.addEventListener("click", startNewSession);
+
+ui.clearCacheBtn.addEventListener("click", () => {
+  if (!window.confirm("Delete every saved session from this browser? This cannot be undone.")) return;
+  try {
+    localStorage.removeItem(SESSION_KEY);
+  } catch {
+    /* Nothing to clear if storage is unavailable. */
+  }
+  startNewSession();
+  renderCacheSize();
+});
+
+// Populate from the built-in list first so the controls work immediately,
+// then let /health refine them.
+populateModels();
+renderSessions();
+renderCacheSize();
+checkHealth();

@@ -3,136 +3,270 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Voice Prompt Builder</title>
+  <title>VoxPrompt</title>
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
-  <main class="app">
-    <header class="header">
-      <h1>Voice Prompt Builder</h1>
-      <p class="tagline">Fully local &mdash; your voice never leaves your machine.</p>
-    </header>
+<div class="shell">
 
-    <div id="banner" class="banner" hidden></div>
+  <!-- ── Sidebar: sessions ─────────────────────────────────────────── -->
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="brand-mark" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor"
+             stroke-width="2" stroke-linecap="round">
+          <path d="M12 2a3 3 0 0 1 3 3v6a3 3 0 0 1-6 0V5a3 3 0 0 1 3-3z"/>
+          <path d="M19 10v1a7 7 0 0 1-14 0v-1M12 18v4"/>
+        </svg>
+      </div>
+      <div class="brand-text">
+        <h1>VoxPrompt</h1>
+        <p>Agentic Prompt Engineering</p>
+      </div>
+    </div>
 
-    <section class="card" aria-labelledby="record-heading">
-      <h2 id="record-heading">1. Record</h2>
+    <button id="newSessionBtn" class="btn btn-new" type="button">
+      <span aria-hidden="true">+</span> New session
+    </button>
 
-      <div class="recorder">
-        <button id="recordBtn" class="btn btn-record" type="button">
-          <span class="dot" aria-hidden="true"></span>
-          <span id="recordLabel">Start recording</span>
-        </button>
-        <div class="timer" id="timer" role="timer" aria-live="off">00:00</div>
+    <div class="rail-label">Recent sessions</div>
+    <nav class="session-scroll">
+      <ul class="session-list" id="sessionList"></ul>
+      <p class="session-empty" id="sessionEmpty">
+        No sessions yet. Record something and it will be saved here.
+      </p>
+    </nav>
+
+    <div class="local-card">
+      <div class="local-head">
+        <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor"
+             stroke-width="2" aria-hidden="true">
+          <path d="M12 2l8 4v6c0 5-3.4 8.5-8 10-4.6-1.5-8-5-8-10V6l8-4z"/>
+        </svg>
+        <strong>100% Local Processing</strong>
+      </div>
+      <p>Audio is transcribed by a server on this machine and deleted straight after. Nothing leaves your system.</p>
+      <dl class="stat-rows">
+        <div><dt>Engine</dt><dd id="statEngine">&mdash;</dd></div>
+        <div><dt>Whisper</dt><dd id="statWhisper">&mdash;</dd></div>
+        <div><dt>Last run</dt><dd id="statLatency">&mdash;</dd></div>
+      </dl>
+    </div>
+  </aside>
+
+  <!-- ── Main: the conversation stream ─────────────────────────────── -->
+  <main class="main">
+    <div class="topbar">
+      <span class="topbar-text">
+        <strong>Private Sandbox:</strong>
+        <span id="sandboxLine">Whisper and a local LLM, running entirely offline.</span>
+      </span>
+      <span class="topbar-status" id="sandboxStatus">
+        <span class="dot-status" id="statusDot"></span><span id="statusLabel">Checking&hellip;</span>
+      </span>
+    </div>
+
+    <div class="stream" id="stream">
+      <div class="agent-intro">
+        <div class="avatar" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor"
+               stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 3l1.9 4.8L18.7 9l-4.8 1.9L12 15.7l-1.9-4.8L5.3 9l4.8-1.2L12 3z"/>
+          </svg>
+        </div>
+        <div class="agent-body">
+          <h2>VoxPrompt Agent</h2>
+          <p>
+            Record or upload a rough spoken idea. I transcribe it locally, sort it into
+            prompt fields you can correct, and assemble a production-ready prompt.
+            Fully offline.
+          </p>
+        </div>
       </div>
 
-      <div class="meter" aria-hidden="true">
-        <div class="meter-fill" id="meterFill"></div>
-      </div>
-      <p class="hint" id="recorderHint">Up to 5 minutes. Just ramble &mdash; you can fix the text afterwards.</p>
+      <div id="banner" class="banner" hidden></div>
 
-      <details class="tuning" id="tuning">
-        <summary>Accuracy settings</summary>
+      <!-- Captured audio -->
+      <section class="audio-card" id="audioCard" hidden aria-label="Captured audio">
+        <div class="wave" id="wave" aria-hidden="true"></div>
+        <div class="audio-meta">
+          <span class="audio-name" id="audioName">recording.webm</span>
+          <span class="audio-time" id="audioTime">0:00</span>
+        </div>
+      </section>
 
-        <div class="field">
-          <label for="modelSelect">Model</label>
-          <select id="modelSelect"></select>
-          <span class="hint" id="modelHint"></span>
+      <!-- Workflow -->
+      <section class="workflow" id="workflow" hidden>
+        <div class="agent-intro">
+          <div class="avatar avatar-run" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor"
+                 stroke-width="2" stroke-linecap="round">
+              <circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>
+            </svg>
+          </div>
+          <div class="agent-body">
+            <h2>Agentic Workflow <span class="pill" id="workflowPill">RUNNING</span></h2>
+            <p id="workflowNote">Processing audio locally&hellip;</p>
+          </div>
         </div>
 
-        <div class="field">
-          <label for="vocabulary">Names &amp; jargon</label>
-          <textarea id="vocabulary" rows="2"
-            placeholder="Kubernetes, Pydantic, Ollama, ACME Corp, Felix"></textarea>
-          <span class="hint" id="vocabHint">
-            Comma-separated <strong>terms</strong>, not sentences. Free &mdash; costs no extra time.
-          </span>
-        </div>
-      </details>
+        <!-- 1. Transcript -->
+        <article class="card" id="resultCard" hidden>
+          <header class="card-head">
+            <h3><span class="card-icon" aria-hidden="true">1</span> Refined Transcript</h3>
+            <span class="badge" id="resultMeta"></span>
+          </header>
+          <p class="card-hint">Editable &mdash; fix anything misheard before the next step.</p>
+          <textarea id="transcript" class="transcript" spellcheck="true"
+                    aria-label="Editable transcript"></textarea>
+          <footer class="card-foot">
+            <span class="meta" id="charCount"></span>
+            <div class="btn-row">
+              <button id="copyBtn" class="btn btn-ghost" type="button">Copy transcript</button>
+              <button id="analyzeBtn" class="btn btn-primary" type="button">Extract variables</button>
+            </div>
+          </footer>
+        </article>
 
-      <div class="divider"><span>or</span></div>
+        <!-- 2. Variables -->
+        <article class="card" id="analyzeCard" hidden>
+          <header class="card-head">
+            <h3><span class="card-icon" aria-hidden="true">2</span> Extracted System Variables</h3>
+            <span class="badge" id="analyzeMeta"></span>
+          </header>
+          <p class="card-hint">
+            Parsed from the transcript by the local model. Every field is editable &mdash;
+            correct what it got wrong, fill what it missed. Blanks are simply left out.
+          </p>
 
-      <div class="upload">
-        <label class="btn btn-secondary" for="fileInput">Choose an audio file</label>
-        <input id="fileInput" type="file" accept="audio/*" hidden>
-        <span class="hint" id="fileName"></span>
-      </div>
-    </section>
+          <div id="analyzeResult" hidden>
+            <div class="chips" id="chipRow"></div>
+            <ul class="fields" id="fieldList"></ul>
+            <footer class="card-foot">
+              <span class="meta" id="fieldStatus"></span>
+              <div class="btn-row">
+                <button id="copyJsonBtn" class="btn btn-ghost" type="button">Copy JSON</button>
+                <button id="buildBtn" class="btn btn-primary" type="button">Build prompt</button>
+              </div>
+            </footer>
+            <details class="raw">
+              <summary>Raw variable mapping (JSON)</summary>
+              <pre id="rawJson"></pre>
+            </details>
+          </div>
+        </article>
 
-    <section class="card" id="statusCard" hidden aria-live="polite">
-      <div class="status">
+        <!-- 3. Prompt -->
+        <article class="card card-final" id="buildCard" hidden>
+          <header class="card-head">
+            <h3><span class="card-icon" aria-hidden="true">3</span> System Prompt Blueprint</h3>
+            <span class="badge" id="buildMeta"></span>
+          </header>
+          <p class="card-hint">
+            Assembled by a fixed template, not by a model &mdash; the same fields always
+            produce the same prompt.
+          </p>
+          <div id="buildResult" hidden>
+            <pre class="prompt-output" id="promptOutput"></pre>
+            <footer class="card-foot">
+              <span class="meta" id="promptStats"></span>
+              <div class="btn-row">
+                <button id="refineBtn" class="btn btn-ghost" type="button">Refine variables</button>
+                <button id="copyPromptBtn" class="btn btn-primary" type="button">Copy final prompt</button>
+              </div>
+            </footer>
+          </div>
+        </article>
+      </section>
+
+      <!-- Inline progress -->
+      <div class="status-row" id="statusCard" hidden aria-live="polite">
         <span class="spinner" id="spinner" aria-hidden="true"></span>
-        <span id="statusText">Transcribing&hellip;</span>
+        <span>
+          <strong id="statusText">Working&hellip;</strong>
+          <span class="meta" id="statusHint"></span>
+        </span>
       </div>
-      <p class="hint" id="statusHint"></p>
-    </section>
+    </div>
 
-    <section class="card" id="resultCard" hidden aria-labelledby="transcript-heading">
-      <div class="result-head">
-        <h2 id="transcript-heading">2. Transcript</h2>
-        <span class="meta" id="resultMeta"></span>
+    <!-- Composer -->
+    <div class="composer">
+      <div class="composer-top">
+        <label class="upload-link" for="fileInput">
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor"
+               stroke-width="2" aria-hidden="true">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M12 3v12M7 8l5-5 5 5"/>
+          </svg>
+          Upload audio file
+        </label>
+        <input id="fileInput" type="file" accept="audio/*" hidden>
+        <span class="meta" id="fileName">mp3, wav, m4a, webm</span>
+        <span class="meta composer-hint" id="recorderHint">Click record to start local input streaming.</span>
       </div>
-      <p class="hint">Editable &mdash; fix any misheard words before the next step.</p>
-      <textarea id="transcript" class="transcript" spellcheck="true"
-                aria-label="Editable transcript"></textarea>
-      <div class="result-foot">
-        <span class="meta" id="charCount"></span>
-        <button id="copyBtn" class="btn btn-secondary" type="button">Copy</button>
-      </div>
-    </section>
 
-    <section class="card" id="analyzeCard" hidden aria-labelledby="analyze-heading">
-      <div class="result-head">
-        <h2 id="analyze-heading">3. Structure</h2>
-        <span class="meta" id="analyzeMeta"></span>
-      </div>
-      <p class="hint">
-        The local model sorts your brain-dump into fields. Everything below is
-        editable &mdash; correct what it got wrong, and fill in anything it
-        marked as missing. Blanks are fine; they are simply left out.
-      </p>
-      <button id="analyzeBtn" class="btn btn-primary" type="button">Analyze transcript</button>
-
-      <div id="analyzeResult" hidden>
-        <ul class="fields" id="fieldList"></ul>
-
-        <div class="result-foot">
-          <span class="meta" id="fieldStatus"></span>
-          <button id="copyJsonBtn" class="btn btn-secondary" type="button">Copy JSON</button>
+      <div class="composer-main">
+        <button id="recordBtn" class="rec-btn" type="button" aria-label="Start recording">
+          <span class="rec-dot" id="recDot"></span>
+        </button>
+        <div class="rec-state">
+          <strong id="recordLabel">Local recorder idle</strong>
+          <div class="meter"><div class="meter-fill" id="meterFill"></div></div>
         </div>
-
-        <details class="raw">
-          <summary>Raw JSON</summary>
-          <pre id="rawJson"></pre>
-        </details>
+        <span class="timer" id="timer">00:00</span>
+        <button id="processBtn" class="btn btn-primary btn-process" type="button" disabled>
+          Process audio <span aria-hidden="true">&rarr;</span>
+        </button>
       </div>
-    </section>
-
-    <section class="card" id="buildCard" hidden aria-labelledby="build-heading">
-      <div class="result-head">
-        <h2 id="build-heading">4. Prompt</h2>
-        <span class="meta" id="buildMeta"></span>
-      </div>
-      <p class="hint">
-        Assembled by a fixed template, not by a model &mdash; the same fields
-        always produce the same prompt.
-      </p>
-      <button id="buildBtn" class="btn btn-primary" type="button">Build prompt</button>
-
-      <div id="buildResult" hidden>
-        <pre class="prompt-output" id="promptOutput"></pre>
-        <div class="result-foot">
-          <span class="meta" id="promptStats"></span>
-          <button id="copyPromptBtn" class="btn btn-primary" type="button">Copy prompt</button>
-        </div>
-      </div>
-    </section>
-
-    <footer class="footer">
-      <span id="healthInfo">&nbsp;</span>
-    </footer>
+    </div>
   </main>
 
-  <script src="/static/app.js"></script>
+  <!-- ── Settings ──────────────────────────────────────────────────── -->
+  <aside class="settings">
+    <header class="settings-head">
+      <h2>Accuracy Settings</h2>
+    </header>
+
+    <section class="setting">
+      <div class="rail-label">Transcription model</div>
+      <select id="modelSelect"></select>
+      <p class="help" id="modelHint"></p>
+    </section>
+
+    <section class="setting">
+      <div class="rail-label">Target model</div>
+      <div class="readonly-field" id="targetModel">&mdash;</div>
+      <p class="help">
+        The local LLM that extracts variables. Set with
+        <code>VPB_OLLAMA_MODEL</code> when starting the server.
+      </p>
+    </section>
+
+    <section class="setting">
+      <div class="rail-label">Names &amp; jargon</div>
+      <textarea id="vocabulary" rows="3"
+                placeholder="Mermaid.js, JSON, CRUD, SQL, WebGPU, microservices"></textarea>
+      <p class="help" id="vocabHint">
+        Custom technical keywords or spelling targets to bias the Whisper engine.
+        Comma-separated <strong>terms</strong>, not sentences.
+      </p>
+    </section>
+
+    <section class="cache-card">
+      <div class="cache-head">
+        <span>Local session cache</span>
+        <span class="cache-size" id="cacheSize">0 KB</span>
+      </div>
+      <button id="clearCacheBtn" class="cache-clear" type="button">
+        <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor"
+             stroke-width="2" aria-hidden="true">
+          <path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6M10 11v6M14 11v6"/>
+        </svg>
+        Clear session databases
+      </button>
+    </section>
+  </aside>
+</div>
+
+<script src="/static/app.js"></script>
 </body>
 </html>

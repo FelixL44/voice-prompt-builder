@@ -1,4 +1,4 @@
-# Voice Prompt Builder
+# VoxPrompt
 
 **Fully local: your voice never leaves your machine.**
 
@@ -200,6 +200,20 @@ like a real answer and leave the question loop with nothing to ask.
 Expect **20&ndash;90 seconds** depending on transcript length. A larger model such
 as `qwen2.5:7b` follows the "do not invent" instruction more reliably, at
 roughly double the time.
+
+## The console
+
+The UI is a three-pane agentic console: sessions on the left, the workflow
+stream in the middle, accuracy settings on the right.
+
+**Sessions are cached in the browser.** Each run is saved to `localStorage`
+with its transcript, variables and final prompt, and reopening one restores
+every stage. That keeps the privacy promise intact: session history never
+reaches the server, because the server holds no state at all. The settings pane
+shows the real cache size and can clear it.
+
+Every number in the interface is a real measurement &mdash; actual engine,
+actual elapsed time, actual cache size. There is no decorative telemetry.
 
 ## Filling the gaps (v0.3)
 
