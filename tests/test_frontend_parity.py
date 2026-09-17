@@ -137,3 +137,47 @@ def _extract_js_function() -> str:
     fn_block = "function isEmptyValue(value) {" + \
         source.split("function isEmptyValue(value) {")[1].split("\n}")[0] + "\n}"
     return f"{null_block}\n{fn_block}"
+
+
+# ---------------------------------------------------------------------------
+# The hidden attribute
+# ---------------------------------------------------------------------------
+
+
+def test_hidden_attribute_is_enforced_in_css() -> None:
+    """`hidden` must actually hide, whatever a component rule sets.
+
+    The attribute is applied by the browser's default stylesheet, so any author
+    rule setting `display` overrides it. `.status-row { display: flex }` once
+    kept the progress row visible from page load, showing placeholder text as
+    though a job were running.
+    """
+    css = (FRONTEND_DIR / "style.css").read_text()
+
+    match = re.search(r"\[hidden\]\s*\{([^}]*)\}", css)
+    assert match, "style.css needs a [hidden] rule"
+
+    body = match.group(1).replace(" ", "")
+    assert "display:none" in body
+    assert "!important" in body, "without !important a component rule still wins"
+
+
+def test_elements_hidden_by_js_are_declared_hidden_in_html() -> None:
+    """An element the JS reveals must start hidden, or it flashes on load."""
+    app_js = APP_JS.read_text()
+    html = (FRONTEND_DIR / "index.html").read_text()
+
+    revealed = set(re.findall(r'ui\.(\w+)\.hidden\s*=\s*false', app_js))
+    id_map = dict(re.findall(r'(\w+):\s*el\("([^"]+)"\)', app_js))
+
+    for name in revealed:
+        element_id = id_map.get(name)
+        if not element_id:
+            continue
+        # Find that element's opening tag and check it carries `hidden`.
+        tag = re.search(rf'<[^>]*id="{re.escape(element_id)}"[^>]*>', html)
+        assert tag, f"no element with id {element_id}"
+        # The bare attribute, not aria-hidden, which does not affect layout.
+        assert re.search(r'(?<!-)\bhidden\b', tag.group(0)), (
+            f"#{element_id} is revealed by JS but does not start hidden"
+        )

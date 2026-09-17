@@ -49,6 +49,15 @@
 
 * { box-sizing: border-box; }
 
+/*
+ * The hidden attribute is applied by the browser's default stylesheet, so any
+ * author rule that sets display beats it -- `.status-row { display: flex }`
+ * silently kept the progress row on screen from page load, showing its
+ * placeholder text as though work were running. Restate it with !important so
+ * hidden always means hidden, whatever a component rule says.
+ */
+[hidden] { display: none !important; }
+
 html, body { height: 100%; }
 
 body {

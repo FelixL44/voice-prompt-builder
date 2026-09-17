@@ -224,6 +224,15 @@ All settings live in `backend/config.py` and come from `VPB_*` env vars:
   fraction, because the total is unknowable mid-generation and an invented
   progress bar is worse than none. Tests must patch `httpx.stream`, not
   `httpx.post`.
+- **`[hidden] { display: none !important; }` is load-bearing -- do not remove
+  it.** The `hidden` attribute is applied by the browser's default stylesheet,
+  so any author rule setting `display` silently beats it. `.status-row` and
+  `.workflow` both use `display: flex`, which left the progress row and
+  workflow block on screen from page load showing their placeholder text
+  ("Working...", "RUNNING") as though a job were running. A component rule can
+  add `display` at any time, so the guard is global rather than per-selector.
+  `tests/test_frontend_parity.py` asserts the rule exists with `!important`,
+  and that every element the JS reveals starts out `hidden` in the markup.
 - **The UI is bilingual (en/de)**; `STRINGS` in `app.js` holds one flat table
   per language and `tests/test_i18n.py` asserts they have identical keys and
   match the backend's languages. Backend errors are translated **by their
