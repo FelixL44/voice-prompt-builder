@@ -119,6 +119,8 @@ _STATUS_BY_CODE = {
     "ollama_timeout": 504,
     "invalid_extraction": 422,
     "empty_prompt": 422,
+    "audio_too_long": 413,
+    "transcript_too_long": 422,
 }
 
 

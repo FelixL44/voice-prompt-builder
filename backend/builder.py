@@ -16,11 +16,17 @@ from dataclasses import dataclass
 from typing import Callable
 
 from backend.schemas import Extraction
+from backend.tokens import CHARS_PER_TOKEN, estimate_tokens
 
-# A rough proxy used everywhere in this project. Real tokenisers are
-# model-specific; four characters per token is close enough to warn someone
-# that a prompt is large, which is all this number is for.
-CHARS_PER_TOKEN = 4
+__all__ = [
+    "CHARS_PER_TOKEN",
+    "EmptyPromptError",
+    "SECTIONS",
+    "Section",
+    "build_prompt",
+    "estimate_tokens",
+    "used_sections",
+]
 
 
 class EmptyPromptError(Exception):
@@ -106,11 +112,6 @@ def build_prompt(extraction: Extraction) -> str:
         )
 
     return "\n\n".join(blocks)
-
-
-def estimate_tokens(text: str) -> int:
-    """A rough token count: characters divided by four."""
-    return len(text) // CHARS_PER_TOKEN
 
 
 def used_sections(extraction: Extraction) -> list[str]:

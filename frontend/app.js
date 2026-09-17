@@ -10,7 +10,8 @@
  */
 "use strict";
 
-const MAX_SECONDS = 300;      // 5 minutes, per the product brief.
+const MAX_SECONDS = 300;      // 5 minutes for live recording, per the brief.
+const MAX_UPLOAD_SECONDS = 1800;   // Mirrors VPB_MAX_AUDIO_SECONDS.
 const WARN_SECONDS = 270;
 const WAVE_BARS = 56;
 const MAX_VOCABULARY_CHARS = 600;   // Mirrors backend/config.py.
@@ -979,15 +980,50 @@ ui.processBtn.addEventListener("click", processAudio);
 ui.analyzeBtn.addEventListener("click", analyzeTranscript);
 ui.buildBtn.addEventListener("click", buildPrompt);
 
-ui.fileInput.addEventListener("change", (event) => {
+/**
+ * Read an uploaded file's duration without decoding it.
+ *
+ * Lets an over-long file be rejected here rather than after an upload and a
+ * wait. The server enforces the same limit regardless; this is only courtesy.
+ */
+function probeDuration(file) {
+  return new Promise((resolve) => {
+    const url = URL.createObjectURL(file);
+    const audio = new Audio();
+    const done = (value) => { URL.revokeObjectURL(url); resolve(value); };
+
+    audio.addEventListener("loadedmetadata", () =>
+      done(Number.isFinite(audio.duration) ? audio.duration : null));
+    audio.addEventListener("error", () => done(null));
+    setTimeout(() => done(null), 5000);   // Some containers never report.
+    audio.src = url;
+  });
+}
+
+ui.fileInput.addEventListener("change", async (event) => {
   const file = event.target.files?.[0];
+  event.target.value = "";   // Allow re-picking the same file.
   if (!file) return;
+
+  clearBanner();
+  const seconds = await probeDuration(file);
+
+  if (seconds !== null && seconds > MAX_UPLOAD_SECONDS) {
+    showBanner(
+      `That file is ${Math.round(seconds / 60)} minutes long, over the ` +
+      `${MAX_UPLOAD_SECONDS / 60} minute limit. Longer audio produces a transcript ` +
+      `too large for the model to read in one pass.`,
+      "warn"
+    );
+    return;
+  }
 
   ui.fileName.textContent = file.name;
   // Uploads carry no level data, so the waveform stays empty until transcribed.
-  stageAudio(file, file.name, 0, []);
-  ui.audioTime.textContent = `${(file.size / 1_048_576).toFixed(1)} MB`;
-  event.target.value = "";   // Allow re-picking the same file.
+  stageAudio(file, file.name, seconds ?? 0, []);
+  ui.audioTime.textContent = seconds
+    ? formatTime(seconds)
+    : `${(file.size / 1_048_576).toFixed(1)} MB`;
 });
 
 ui.transcript.addEventListener("input", () => {

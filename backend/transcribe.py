@@ -14,6 +14,7 @@ import subprocess
 import threading
 import time
 import uuid
+import wave
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -61,6 +62,12 @@ class ModelLoadError(TranscriptionError):
     code = "model_load_failed"
 
 
+class AudioTooLongError(TranscriptionError):
+    """The recording exceeds the configured length limit."""
+
+    code = "audio_too_long"
+
+
 # --------------------------------------------------------------------------
 # ffmpeg
 # --------------------------------------------------------------------------
@@ -89,6 +96,71 @@ def ffmpeg_version(settings: Settings | None = None) -> str | None:
         return None
     first_line = proc.stdout.splitlines()[0] if proc.stdout else ""
     return first_line or None
+
+
+def _ffprobe_path(settings: Settings) -> str:
+    """ffprobe ships with ffmpeg, so derive it from the configured path."""
+    configured = Path(settings.ffmpeg_path)
+    sibling = configured.with_name(configured.name.replace("ffmpeg", "ffprobe"))
+    return str(sibling) if configured.name != str(configured) else "ffprobe"
+
+
+def probe_duration(src: Path, settings: Settings | None = None) -> float | None:
+    """Return the audio duration in seconds, or None if it cannot be read.
+
+    Uses ffprobe, which reads container metadata instead of decoding, so this
+    costs milliseconds even for a multi-hour file. None is not an error: some
+    inputs genuinely have no duration metadata, and the post-conversion check
+    catches those.
+    """
+    settings = settings or get_settings()
+    probe = _ffprobe_path(settings)
+    if shutil.which(probe) is None:
+        return None
+
+    try:
+        proc = subprocess.run(
+            [probe, "-v", "error", "-show_entries", "format=duration",
+             "-of", "default=noprint_wrappers=1:nokey=1", str(src)],
+            capture_output=True, text=True, timeout=30, check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+    raw = (proc.stdout or "").strip()
+    try:
+        duration = float(raw)
+    except ValueError:
+        return None
+    return duration if duration > 0 else None
+
+
+def _check_duration(seconds: float, settings: Settings) -> None:
+    """Refuse audio longer than the configured limit.
+
+    A size cap is not a length cap: 100 MB of low-bitrate Opus is hours of
+    speech, which would hold the machine for hours and then produce a
+    transcript too long to analyse.
+    """
+    if seconds <= settings.max_audio_seconds:
+        return
+    raise AudioTooLongError(
+        f"The audio is {seconds / 60:.0f} minutes long, over the "
+        f"{settings.max_audio_seconds / 60:.0f} minute limit. Record or upload "
+        "something shorter, or raise VPB_MAX_AUDIO_SECONDS."
+    )
+
+
+def wav_duration(path: Path) -> float | None:
+    """Exact duration of a PCM WAV, read from its header."""
+    try:
+        with wave.open(str(path)) as handle:
+            rate = handle.getframerate()
+            return handle.getnframes() / rate if rate else None
+    except (OSError, wave.Error, EOFError):
+        # EOFError comes from a truncated header, which is exactly what a
+        # half-written or corrupt file looks like.
+        return None
 
 
 def convert_to_wav(src: Path, dst: Path, settings: Settings | None = None) -> Path:
@@ -346,10 +418,24 @@ def transcribe_upload(
 
     # Queue rather than thrash: a CPU with no headroom serves two concurrent
     # transcriptions more slowly than two consecutive ones.
-    with _transcription_slots(settings):
-        with _scratch_dir(settings) as work:
-            raw_path = work / f"input{suffix}"
-            wav_path = work / "audio.wav"
-            raw_path.write_bytes(data)
+    with _scratch_dir(settings) as work:
+        raw_path = work / f"input{suffix}"
+        wav_path = work / "audio.wav"
+        raw_path.write_bytes(data)
+
+        # Checked before the queue: a two-hour upload should be refused
+        # immediately, not after waiting behind someone else's job.
+        probed = probe_duration(raw_path, settings)
+        if probed is not None:
+            _check_duration(probed, settings)
+
+        with _transcription_slots(settings):
             convert_to_wav(raw_path, wav_path, settings)
+
+            # Backstop for inputs whose metadata lied or was absent. Converting
+            # is far cheaper than transcribing, so this still saves the worst case.
+            actual = wav_duration(wav_path)
+            if actual is not None:
+                _check_duration(actual, settings)
+
             return transcribe_wav(wav_path, settings)

@@ -344,3 +344,31 @@ def test_upload_within_the_limit_is_accepted() -> None:
 
     # Rejected for being undecodable, not for being too large.
     assert response.status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# Length limits
+# ---------------------------------------------------------------------------
+
+
+def test_analyze_refuses_an_overlong_transcript() -> None:
+    """Refusing beats a confident extraction built on a truncated transcript."""
+    response = client.post("/analyze", json={"transcript": "word " * 20_000})
+
+    assert response.status_code == 422
+    body = response.json()
+    assert body["error"] == "transcript_too_long"
+    assert "VPB_OLLAMA_NUM_CTX=" in body["detail"]
+
+
+def test_analyze_does_not_call_the_model_when_too_long(monkeypatch) -> None:
+    """The check must happen before the expensive call, not after."""
+    import httpx
+
+    called = []
+    monkeypatch.setattr(httpx, "post", lambda *a, **k: called.append(1))
+
+    response = client.post("/analyze", json={"transcript": "word " * 20_000})
+
+    assert response.status_code == 422
+    assert called == [], "Ollama was called despite the transcript being too long"

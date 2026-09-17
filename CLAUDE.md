@@ -219,6 +219,21 @@ All settings live in `backend/config.py` and come from `VPB_*` env vars:
   second test asserting that check is not vacuous. Changing how app.js looks up
   elements once made it match nothing and pass regardless; if the lookup pattern
   changes again, update `_referenced_ids()`.
+- **Ollama truncates an oversized prompt silently, from the front.** Measured:
+  ~6,600 tokens sent with `num_ctx` 2048 returned HTTP 200 having evaluated
+  1,026, and the extraction confidently invented a value for the part it never
+  saw. Since a brain-dump states its goal first, that is the half which gets
+  lost. `check_transcript_fits()` therefore refuses before calling the model,
+  and `_warn_if_truncated()` compares `prompt_eval_count` afterwards as a net.
+  **Never relax this into a silent truncate-and-continue.**
+- **Audio length is capped separately from upload size** (`VPB_MAX_AUDIO_SECONDS`,
+  30 min). 100 MB of 24 kbps Opus is ~10 hours; the byte cap alone allows a job
+  that would run for hours and then produce an unanalysable transcript. The
+  duration is probed with `ffprobe` *before* the concurrency slot is taken, so a
+  bad upload is refused in ~0.3s instead of queueing behind real work.
+- **The two limits are deliberately consistent**: 30 minutes of speech is about
+  4,500 words (~6,000 tokens), which fits the ~7,200-token transcript budget at
+  the default `num_ctx`. Raising one without the other reopens the hole.
 - **The model name is allow-listed** (`ALLOWED_MODELS`) because the per-request
   override reaches the Hugging Face hub; it must never be free-form.
 - **Code, not the model, decides what is missing** in v0.3 (null/empty fields).

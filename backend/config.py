@@ -56,6 +56,14 @@ class Settings:
     max_upload_bytes: int = 100 * 1024 * 1024
     """Reject uploads larger than this. ~5 min of Opus is well under 10 MB."""
 
+    max_audio_seconds: int = 1800
+    """Longest audio accepted, in seconds (30 minutes).
+
+    A size cap alone is not a length cap: 100 MB of 24 kbps Opus is nearly ten
+    hours, which would occupy the machine for hours and then produce a
+    transcript far too long to analyse. This bounds both.
+    """
+
     ffmpeg_path: str = "ffmpeg"
 
     ffmpeg_timeout_s: int = 120
@@ -89,6 +97,9 @@ class Settings:
 
     ollama_num_ctx: int = 8192
     """Must fit the transcript plus the system prompt. ~750 words per 5 min."""
+
+    ollama_response_reserve_tokens: int = 512
+    """Held back from the context window for the model's own JSON output."""
 
     prompts_dir: Path = PROJECT_ROOT / "backend" / "prompts"
 
@@ -127,6 +138,7 @@ def get_settings() -> Settings:
         vad_filter=_env_bool("VPB_VAD_FILTER", True),
         beam_size=_env_int("VPB_BEAM_SIZE", 5),
         max_upload_bytes=_env_int("VPB_MAX_UPLOAD_BYTES", 100 * 1024 * 1024),
+        max_audio_seconds=_env_int("VPB_MAX_AUDIO_SECONDS", 1800),
         ffmpeg_path=_env_str("VPB_FFMPEG_PATH", "ffmpeg"),
         ffmpeg_timeout_s=_env_int("VPB_FFMPEG_TIMEOUT_S", 120),
         max_concurrent_transcriptions=_env_int("VPB_MAX_CONCURRENT_TRANSCRIPTIONS", 1),
@@ -136,6 +148,7 @@ def get_settings() -> Settings:
         ollama_model=_env_str("VPB_OLLAMA_MODEL", "llama3.2:3b"),
         ollama_timeout_s=_env_int("VPB_OLLAMA_TIMEOUT_S", 600),
         ollama_num_ctx=_env_int("VPB_OLLAMA_NUM_CTX", 8192),
+        ollama_response_reserve_tokens=_env_int("VPB_OLLAMA_RESPONSE_RESERVE", 512),
     )
 
 

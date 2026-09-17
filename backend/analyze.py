@@ -23,6 +23,7 @@ from pydantic import ValidationError
 
 from backend.config import Settings, get_settings
 from backend.schemas import Extraction, MissingField
+from backend.tokens import estimate_tokens
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +56,20 @@ class InvalidExtractionError(AnalysisError):
     """The model returned something that does not fit the schema."""
 
     code = "invalid_extraction"
+
+
+class TranscriptTooLongError(AnalysisError):
+    """The transcript will not fit the model's context window.
+
+    Refusing is the whole point. Ollama accepts an oversized prompt, returns
+    HTTP 200, and silently drops whatever did not fit -- measured: a 6,600
+    token prompt sent with num_ctx 2048 was evaluated at 1,026 tokens with no
+    warning. It truncates from the *front*, which is where a brain-dump states
+    its goal, so the result is a confident extraction built on the wrong half
+    of the recording.
+    """
+
+    code = "transcript_too_long"
 
 
 # The question asked when a field comes back empty. Fixed text, because the
@@ -144,6 +159,39 @@ def find_missing(extraction: Extraction) -> list[MissingField]:
         for name in QUESTIONS  # QUESTIONS defines both membership and priority.
         if name in data and is_empty(data[name])
     ]
+
+
+def transcript_budget(settings: Settings | None = None) -> int:
+    """How many transcript tokens fit, after the system prompt and the reply."""
+    settings = settings or get_settings()
+    overhead = estimate_tokens(load_prompt("extract")) + settings.ollama_response_reserve_tokens
+    return max(0, settings.ollama_num_ctx - overhead)
+
+
+def check_transcript_fits(transcript: str, settings: Settings | None = None) -> int:
+    """Refuse a transcript that cannot fit the context window.
+
+    Returns:
+        The estimated token count, for logging.
+
+    Raises:
+        TranscriptTooLongError: it would be silently truncated.
+    """
+    settings = settings or get_settings()
+    tokens = estimate_tokens(transcript)
+    budget = transcript_budget(settings)
+
+    if tokens > budget:
+        # Suggest a window that would actually work, rounded to something sane.
+        needed = settings.ollama_num_ctx + (tokens - budget)
+        suggested = min(131072, 1 << (needed - 1).bit_length())
+        raise TranscriptTooLongError(
+            f"The transcript is about {tokens:,} tokens but only {budget:,} fit "
+            f"the context window. Ollama would silently drop the beginning of it, "
+            f"which is usually where the goal is. Shorten the recording, or "
+            f"restart the server with VPB_OLLAMA_NUM_CTX={suggested}."
+        )
+    return tokens
 
 
 def _request_body(transcript: str, settings: Settings) -> dict[str, object]:
@@ -238,16 +286,41 @@ def analyze_transcript(
     if not transcript or not transcript.strip():
         raise InvalidExtractionError("The transcript is empty, so there is nothing to analyse.")
 
+    tokens = check_transcript_fits(transcript, settings)
+
     started = time.monotonic()
     payload = _post_to_ollama(_request_body(transcript, settings), settings)
+    _warn_if_truncated(payload, transcript, settings)
     extraction = normalize(_parse_extraction(payload))
     elapsed = time.monotonic() - started
 
     logger.info(
-        "Analysed %d chars in %.1fs with %s",
-        len(transcript), elapsed, settings.ollama_model,
+        "Analysed %d chars (~%d tokens) in %.1fs with %s",
+        len(transcript), tokens, elapsed, settings.ollama_model,
     )
     return extraction, round(elapsed, 2)
+
+
+def _warn_if_truncated(
+    payload: dict[str, object], transcript: str, settings: Settings
+) -> None:
+    """Log loudly if Ollama evaluated far fewer tokens than we sent.
+
+    A safety net behind ``check_transcript_fits``: the estimate is rough, and
+    silent truncation is severe enough to be worth catching after the fact too.
+    The threshold is deliberately slack so a rough estimate cannot cry wolf.
+    """
+    seen = payload.get("prompt_eval_count")
+    if not isinstance(seen, int) or seen <= 0:
+        return
+
+    sent = estimate_tokens(load_prompt("extract")) + estimate_tokens(transcript)
+    if sent > 0 and seen < sent * 0.6:
+        logger.warning(
+            "Ollama evaluated only %d tokens of an estimated %d: the transcript "
+            "was probably truncated. Raise VPB_OLLAMA_NUM_CTX (currently %d).",
+            seen, sent, settings.ollama_num_ctx,
+        )
 
 
 def ollama_models(settings: Settings | None = None) -> list[str] | None:

@@ -78,6 +78,8 @@ Every setting is an environment variable:
 | `VPB_VAD_FILTER` | `true` | Skip silence before transcribing |
 | `VPB_BEAM_SIZE` | `5` | Lower is faster, slightly less accurate |
 | `VPB_MAX_UPLOAD_BYTES` | `104857600` | 100 MB |
+| `VPB_MAX_AUDIO_SECONDS` | `1800` | 30 minutes; a size cap is not a length cap |
+| `VPB_OLLAMA_RESPONSE_RESERVE` | `512` | Context tokens held back for the reply |
 | `VPB_FFMPEG_PATH` | `ffmpeg` | |
 | `VPB_MAX_CONCURRENT_TRANSCRIPTIONS` | `1` | Queue rather than thrash a CPU |
 | `VPB_WARMUP` | `true` | Load the model at startup, not on first use |
@@ -254,6 +256,37 @@ The UI shows the prompt with a copy button and a rough token estimate
 (characters / 4 &mdash; enough to warn you that a prompt is large, which is all
 that number is for). Editing a field marks a built prompt **out of date**, so
 you never copy something that no longer matches the fields above.
+
+## Limits, and why they exist
+
+Two limits are enforced by the server, and they are the same problem seen twice.
+
+**Audio length: 30 minutes.** A size cap is not a length cap &mdash; 100 MB of
+24 kbps Opus is nearly ten hours, which would occupy the machine for hours.
+`ffprobe` reads the duration from container metadata before anything is
+decoded, so an over-long file is refused in **under a second** rather than
+after a long transcription.
+
+**Transcript length: whatever fits the context window.** This one matters more,
+because the failure is silent. Measured against `llama3.2:3b`: a prompt of
+~6,600 tokens sent with `num_ctx` 2048 returned **HTTP 200** having evaluated
+only 1,026 tokens. Ollama discards the overflow without complaint, and it
+truncates from the *front* &mdash; which is where a spoken brain-dump states its
+goal. In that test a codename given in the first sentence came back fabricated,
+while a deadline from the last sentence came back correct.
+
+So the transcript is measured against the window before the model is called,
+and an oversized one is refused with the value that would fit:
+
+```json
+{
+  "error": "transcript_too_long",
+  "detail": "The transcript is about 25,000 tokens but only 7,187 fit the context window. Ollama would silently drop the beginning of it, which is usually where the goal is. Shorten the recording, or restart the server with VPB_OLLAMA_NUM_CTX=32768."
+}
+```
+
+A rough estimate can be wrong, so `prompt_eval_count` is compared against the
+tokens sent after every call and a large shortfall is logged as a warning.
 
 ## Privacy
 
