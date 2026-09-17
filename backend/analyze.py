@@ -234,21 +234,72 @@ def check_transcript_fits(transcript: str, settings: Settings | None = None) -> 
     return tokens
 
 
-def _request_body(transcript: str, settings: Settings) -> dict[str, object]:
-    """Build the Ollama generate payload, constrained to the Extraction schema."""
+# What went wrong last time, which decides what the retry changes.
+TRUNCATED = "truncated"
+MALFORMED = "malformed"
+
+RETRY_NOTE = (
+    "\n\nYour previous reply could not be parsed. Return only the JSON object, "
+    "complete and closed, with no commentary before or after it."
+)
+
+
+def _request_body(
+    transcript: str,
+    settings: Settings,
+    previous_failure: str | None = None,
+) -> dict[str, object]:
+    """Build the Ollama generate payload, constrained to the Extraction schema.
+
+    A retry must differ from the attempt that failed: at temperature 0 the same
+    request reproduces the same output exactly. What changes depends on how it
+    failed, which the model tells us through ``done_reason``.
+    """
+    system = load_prompt("extract")
+    temperature = 0.0   # Extraction, not creativity.
+    num_predict = settings.ollama_response_reserve_tokens
+
+    if previous_failure == TRUNCATED:
+        # It ran out of room mid-object. More warmth would not help; more room
+        # will. Doubling would be a guess, and a guess that is still too small
+        # simply fails again -- so give it everything the context window has
+        # left once the prompt is accounted for.
+        num_predict = max(num_predict * 2, _remaining_room(transcript, settings))
+    elif previous_failure == MALFORMED:
+        # It had room and still produced something unusable, so nudge it off
+        # the path it took and say plainly what went wrong.
+        temperature = 0.3
+        system += RETRY_NOTE
+
     return {
         "model": settings.ollama_model,
         "stream": True,
         "format": Extraction.model_json_schema(),
-        "system": load_prompt("extract"),
+        "system": system,
         # Tagged rather than bare, so a transcript that contains instructions
         # reads as data instead of as something to obey.
         "prompt": f"<transcript>\n{transcript.strip()}\n</transcript>",
         "options": {
-            "temperature": 0,  # Extraction, not creativity.
+            "temperature": temperature,
             "num_ctx": settings.ollama_num_ctx,
+            "num_predict": num_predict,
         },
     }
+
+
+def _remaining_room(transcript: str, settings: Settings) -> int:
+    """Output tokens still available after the prompt, with a small margin."""
+    used = estimate_tokens(load_prompt("extract")) + estimate_tokens(transcript)
+    return max(0, settings.ollama_num_ctx - used - 64)
+
+
+def _failure_kind(payload: dict[str, object]) -> str:
+    """Classify a bad reply so the retry can respond to it.
+
+    Ollama reports ``done_reason`` as "length" when it hit the output cap, which
+    is the difference between "give it more room" and "ask it again differently".
+    """
+    return TRUNCATED if payload.get("done_reason") == "length" else MALFORMED
 
 
 def _raise_for_status(status: int, detail: str, settings: Settings) -> None:
@@ -371,13 +422,40 @@ def analyze_transcript(
     tokens = check_transcript_fits(transcript, settings)
 
     started = time.monotonic()
-    if on_progress:
-        on_progress(None, "sending the transcript to the model")
-    payload = _post_to_ollama(
-        _request_body(transcript, settings), settings, on_progress, cancel
-    )
-    _warn_if_truncated(payload, transcript, settings)
-    extraction = normalize(_parse_extraction(payload))
+    attempts = max(1, settings.analysis_retries + 1)
+    failure: str | None = None
+    extraction: Extraction | None = None
+
+    for attempt in range(attempts):
+        if cancel is not None and cancel.is_set():
+            raise AnalysisCancelledError("Extraction cancelled.")
+
+        if on_progress:
+            on_progress(
+                None,
+                "sending the transcript to the model" if attempt == 0
+                else f"retrying after a {failure} reply (attempt {attempt + 1})",
+            )
+
+        payload = _post_to_ollama(
+            _request_body(transcript, settings, failure), settings, on_progress, cancel
+        )
+        _warn_if_truncated(payload, transcript, settings)
+
+        try:
+            extraction = normalize(_parse_extraction(payload))
+            break
+        except InvalidExtractionError:
+            failure = _failure_kind(payload)
+            if attempt + 1 >= attempts:
+                logger.warning("Extraction failed after %d attempt(s)", attempts)
+                raise
+            logger.info(
+                "Extraction attempt %d gave a %s reply; retrying",
+                attempt + 1, failure,
+            )
+
+    assert extraction is not None   # The loop either breaks or raises.
     elapsed = time.monotonic() - started
 
     logger.info(

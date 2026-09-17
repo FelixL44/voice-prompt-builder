@@ -79,7 +79,8 @@ Every setting is an environment variable:
 | `VPB_BEAM_SIZE` | `5` | Lower is faster, slightly less accurate |
 | `VPB_MAX_UPLOAD_BYTES` | `104857600` | 100 MB |
 | `VPB_MAX_AUDIO_SECONDS` | `1800` | 30 minutes; a size cap is not a length cap |
-| `VPB_OLLAMA_RESPONSE_RESERVE` | `512` | Context tokens held back for the reply |
+| `VPB_OLLAMA_RESPONSE_RESERVE` | `512` | Output budget, passed as `num_predict` |
+| `VPB_ANALYSIS_RETRIES` | `1` | Extra attempts after a malformed reply |
 | `VPB_DB_PATH` | `./data/sessions.db` | Session history |
 | `VPB_MAX_ACTIVE_JOBS` | `4` | Unfinished jobs allowed at once |
 | `VPB_JOB_RETENTION_S` | `120` | How long a finished job stays readable |
@@ -307,6 +308,22 @@ and an oversized one is refused with the value that would fit:
 
 A rough estimate can be wrong, so `prompt_eval_count` is compared against the
 tokens sent after every call and a large shortfall is logged as a warning.
+
+**A malformed reply is retried once.** Extraction costs 20&ndash;90 seconds, so
+losing a run to one bad response is expensive. The retry only helps if it
+differs from the attempt that failed &mdash; at temperature 0 the same request
+reproduces the same output exactly &mdash; so what changes depends on *how* it
+failed, which Ollama reports through `done_reason`:
+
+- **Cut off mid-JSON** (`done_reason: length`): it needed more room, not a
+  different sample. The retry gets whatever the context window has left once
+  the prompt is accounted for, rather than an arbitrary multiple that might
+  still be too small.
+- **Unparseable with room to spare**: the temperature is raised to move it off
+  the path it took, and the prompt says plainly what was wrong with the reply.
+
+Transport failures are **not** retried &mdash; re-sending to an unreachable
+Ollama just doubles the wait for the same error.
 
 ## Privacy
 

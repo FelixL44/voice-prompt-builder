@@ -235,6 +235,16 @@ All settings live in `backend/config.py` and come from `VPB_*` env vars:
   resumed, and persisting it would let the UI show something untrue after a
   restart. Cancellation is cooperative -- checked between Whisper segments and
   between streamed Ollama tokens.
+- **A retry must change something.** At temperature 0 an identical request
+  reproduces an identical failure, so `_request_body()` takes the previous
+  failure kind. `done_reason == "length"` means truncation: give it the room
+  actually left in the context window, since doubling is a guess that can still
+  be too small (observed: 24 -> 48 failed again). Anything else means it had
+  room and still produced rubbish: raise the temperature and tell it what went
+  wrong. Transport errors are never retried.
+- **`num_predict` is set to the response reserve**, so the reserved tokens are a
+  real budget rather than an assumption. If a legitimate extraction outgrows it
+  the truncation retry recovers, which is why the two work as a pair.
 - **Analysis streams from Ollama** (`"stream": True`). That is what makes it
   interruptible and observable; the chunks are reassembled so callers still get
   one response. Progress there is reported as tokens generated with a `None`

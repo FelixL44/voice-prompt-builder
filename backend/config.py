@@ -114,7 +114,19 @@ class Settings:
     """Must fit the transcript plus the system prompt. ~750 words per 5 min."""
 
     ollama_response_reserve_tokens: int = 512
-    """Held back from the context window for the model's own JSON output."""
+    """Held back from the context window for the model's own JSON output.
+
+    Also passed as ``num_predict``, so the reservation is a real budget rather
+    than an assumption: the model cannot quietly exceed what was set aside.
+    """
+
+    analysis_retries: int = 1
+    """Extra extraction attempts after a malformed reply.
+
+    Each costs another 20-90s on a CPU, so one is the useful default. A retry
+    always changes something -- a repeat at temperature 0 would reproduce the
+    same failure exactly.
+    """
 
     prompts_dir: Path = PROJECT_ROOT / "backend" / "prompts"
 
@@ -169,6 +181,7 @@ def get_settings() -> Settings:
         ollama_timeout_s=_env_int("VPB_OLLAMA_TIMEOUT_S", 600),
         ollama_num_ctx=_env_int("VPB_OLLAMA_NUM_CTX", 8192),
         ollama_response_reserve_tokens=_env_int("VPB_OLLAMA_RESPONSE_RESERVE", 512),
+        analysis_retries=_env_int("VPB_ANALYSIS_RETRIES", 1),
         db_path=Path(_env_str("VPB_DB_PATH", str(PROJECT_ROOT / "data" / "sessions.db"))),
     )
 
