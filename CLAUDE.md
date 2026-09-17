@@ -193,6 +193,17 @@ All settings live in `backend/config.py` and come from `VPB_*` env vars:
 - **Uploads are size-checked before being buffered**: the declared
   Content-Length is refused outright, then the body is read in 1 MB chunks so a
   missing or dishonest header still cannot fill memory.
+- **Warmup runs in the lifespan handler and is never awaited.** The server
+  must accept requests immediately; `/health` reports `model_warming` so the UI
+  can explain the wait. A failing warmup is logged and swallowed -- no network
+  at startup must not stop the server, and the real error surfaces on the first
+  request anyway. `tests/conftest.py` sets `VPB_WARMUP=false` before anything
+  imports `backend.config`, or every TestClient would start a real download.
+- **`/health` checks that the Ollama model is *pulled*, not just that Ollama
+  answers.** `ollama_models()` returns `None` for unreachable and `[]` for
+  running-but-empty; those are different states and the UI reports them
+  differently. An untagged configured name matches `name:latest`, since that is
+  how Ollama stores an untagged pull.
 - **The model name is allow-listed** (`ALLOWED_MODELS`) because the per-request
   override reaches the Hugging Face hub; it must never be free-form.
 - **Code, not the model, decides what is missing** in v0.3 (null/empty fields).

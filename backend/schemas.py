@@ -44,8 +44,15 @@ class HealthResponse(BaseModel):
     model_loaded: bool = Field(
         description="False until the first transcription warms the model cache."
     )
+    model_warming: bool = Field(
+        default=False, description="True while the model is loading in the background."
+    )
     ollama: bool = Field(default=False, description="Whether Ollama is reachable.")
     ollama_model: str = Field(default="", description="Configured extraction model.")
+    ollama_model_available: bool = Field(
+        default=False,
+        description="Whether the configured model has actually been pulled.",
+    )
 
 
 class ErrorResponse(BaseModel):

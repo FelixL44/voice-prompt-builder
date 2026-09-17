@@ -49,9 +49,17 @@ uv run uvicorn backend.main:app --reload --port 8000
 
 Open <http://127.0.0.1:8000>, click **Start recording**, talk, then click stop.
 
-The first transcription downloads the Whisper model (~150 MB for `base`) and
-takes a minute. After that, expect roughly **a tenth of the audio length** &mdash;
+The Whisper model loads in the background as the server starts, so the first
+recording does not pay for it. The very first run also downloads it (~150 MB
+for `base`); `/health` reports `model_warming` while that happens, and the
+footer says "loading" rather than leaving you guessing.
+
+After that, expect roughly **a tenth of the audio length** with `base` &mdash;
 about 30 seconds for a 5-minute brain-dump on a CPU-only Intel Mac.
+
+`GET /health` also reports whether the configured Ollama model has actually
+been pulled, not just whether Ollama is running, so a missing model is a
+warning on page load instead of a failure after you have already recorded.
 
 Microphone access needs a secure context, which `127.0.0.1` counts as. If the
 browser never prompts, check
@@ -72,6 +80,7 @@ Every setting is an environment variable:
 | `VPB_MAX_UPLOAD_BYTES` | `104857600` | 100 MB |
 | `VPB_FFMPEG_PATH` | `ffmpeg` | |
 | `VPB_MAX_CONCURRENT_TRANSCRIPTIONS` | `1` | Queue rather than thrash a CPU |
+| `VPB_WARMUP` | `true` | Load the model at startup, not on first use |
 | `VPB_OLLAMA_MODEL` | `llama3.2:3b` | Any pulled model; 3B&ndash;8B is the usable range |
 | `VPB_OLLAMA_URL` | `http://localhost:11434` | |
 | `VPB_OLLAMA_TIMEOUT_S` | `600` | |

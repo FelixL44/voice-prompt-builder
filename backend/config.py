@@ -60,6 +60,13 @@ class Settings:
 
     ffmpeg_timeout_s: int = 120
 
+    warmup_on_startup: bool = True
+    """Load the Whisper model in the background as the server starts.
+
+    Without it the first recording pays the full load (~40s for base, ~90s for
+    small) while the user waits with no idea why.
+    """
+
     max_concurrent_transcriptions: int = 1
     """Transcriptions allowed to run at once.
 
@@ -123,6 +130,7 @@ def get_settings() -> Settings:
         ffmpeg_path=_env_str("VPB_FFMPEG_PATH", "ffmpeg"),
         ffmpeg_timeout_s=_env_int("VPB_FFMPEG_TIMEOUT_S", 120),
         max_concurrent_transcriptions=_env_int("VPB_MAX_CONCURRENT_TRANSCRIPTIONS", 1),
+        warmup_on_startup=_env_bool("VPB_WARMUP", True),
         tmp_dir=Path(_env_str("VPB_TMP_DIR", str(PROJECT_ROOT / "tmp"))),
         ollama_url=_env_str("VPB_OLLAMA_URL", "http://localhost:11434").rstrip("/"),
         ollama_model=_env_str("VPB_OLLAMA_MODEL", "llama3.2:3b"),

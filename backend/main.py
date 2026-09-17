@@ -6,7 +6,10 @@ machine -- the only network traffic is the one-time Whisper model download.
 
 from __future__ import annotations
 
+import asyncio
 import logging
+from contextlib import asynccontextmanager
+from collections.abc import AsyncIterator
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.concurrency import run_in_threadpool
@@ -17,7 +20,8 @@ from backend.analyze import (
     AnalysisError,
     analyze_transcript,
     find_missing,
-    ollama_available,
+    ollama_model_available,
+    ollama_models,
 )
 from backend.builder import (
     EmptyPromptError,
@@ -43,7 +47,9 @@ from backend.transcribe import (
     ffmpeg_version,
     loaded_models,
     model_is_loaded,
+    model_is_warming,
     transcribe_upload,
+    warm_up,
 )
 
 logging.basicConfig(
@@ -73,10 +79,33 @@ class NoCacheStaticFiles(StaticFiles):
         return response
 
 
+@asynccontextmanager
+async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    """Warm the Whisper model in the background while the server starts.
+
+    Deliberately not awaited: the server must accept requests immediately, and
+    /health reports `model_warming` so the UI can explain the wait rather than
+    appearing to hang on the first recording.
+    """
+    settings = get_settings()
+    task: asyncio.Task[None] | None = None
+
+    if settings.warmup_on_startup:
+        logger.info("Warming up %s in the background", settings.whisper_model)
+        task = asyncio.create_task(asyncio.to_thread(warm_up, settings))
+
+    try:
+        yield
+    finally:
+        if task is not None and not task.done():
+            task.cancel()
+
+
 app = FastAPI(
     title="Voice Prompt Builder",
     version="0.1.0",
     description="Turn a spoken brain-dump into a structured prompt, fully locally.",
+    lifespan=lifespan,
 )
 
 # Which error maps to which status code. Anything unlisted is a 500.
@@ -143,11 +172,17 @@ def health() -> HealthResponse:
     """
     settings = get_settings()
     has_ffmpeg = ffmpeg_available(settings)
+
+    # One call answers both questions: reachability and whether the configured
+    # model is actually there.
+    models = ollama_models(settings)
     return HealthResponse(
         status="ok" if has_ffmpeg else "degraded",
         ffmpeg=has_ffmpeg,
-        ollama=ollama_available(settings),
+        model_warming=model_is_warming(),
+        ollama=models is not None,
         ollama_model=settings.ollama_model,
+        ollama_model_available=ollama_model_available(settings, models),
         ffmpeg_version=ffmpeg_version(settings),
         whisper_model=settings.whisper_model,
         available_models=list(ALLOWED_MODELS),

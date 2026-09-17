@@ -110,6 +110,9 @@ const state = {
 /** Duration of the most recent recording, used to estimate transcription time. */
 let lastDurationSeconds = 0;
 
+/** Model sizes already resident on the server, per the last /health call. */
+let warmModels = new Set();
+
 // ---------------------------------------------------------------------------
 // Small UI helpers
 // ---------------------------------------------------------------------------
@@ -419,6 +422,31 @@ el.copyBtn.addEventListener("click", async () => {
   }
 });
 
+/**
+ * Warn about the LLM before someone records five minutes for nothing.
+ *
+ * A reachable Ollama without the configured model fails only at the Analyze
+ * step, so the two cases are reported separately and specifically.
+ */
+function reportLlmState(health) {
+  if (!health.ffmpeg) return; // The ffmpeg banner is the more urgent one.
+
+  if (!health.ollama) {
+    showBanner(
+      "<strong>Ollama is not running</strong>, so the Analyze step will fail. " +
+      "Start it with <code>ollama serve</code>. Recording still works.",
+      "warn"
+    );
+  } else if (!health.ollama_model_available) {
+    showBanner(
+      `<strong>Model <code>${health.ollama_model}</code> is not pulled.</strong> ` +
+      `The Analyze step will fail until you run ` +
+      `<code>ollama pull ${health.ollama_model}</code>. Recording still works.`,
+      "warn"
+    );
+  }
+}
+
 /** Warn about a missing ffmpeg before someone records five minutes for nothing. */
 async function checkHealth() {
   try {
@@ -452,6 +480,8 @@ function populateModels(health = null) {
 
   // Keep the user's choice across the /health refresh.
   const previous = el.modelSelect.value;
+
+  warmModels = new Set(health?.loaded_models ?? []);
 
   el.modelSelect.innerHTML = "";
   for (const name of options) {

@@ -7,11 +7,17 @@ skip cleanly on machines without ``say`` or ``ffmpeg``.
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 from pathlib import Path
 
 import pytest
+
+# Set before anything imports backend.config, whose settings are cached.
+# Otherwise every TestClient would kick off a real model download in the
+# background and slow the suite down for no benefit.
+os.environ.setdefault("VPB_WARMUP", "false")
 
 SAMPLE_SENTENCE = "The quick brown fox jumps over the lazy dog."
 

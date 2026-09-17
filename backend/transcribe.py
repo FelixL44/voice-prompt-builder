@@ -178,6 +178,34 @@ def _transcription_slots(settings: Settings) -> threading.BoundedSemaphore:
         return _slots
 
 
+# Set while a warmup is in flight, so /health can distinguish "not loaded yet"
+# from "loading right now" and the UI can say which.
+_warming = threading.Event()
+
+
+def model_is_warming() -> bool:
+    """True while a background warmup is still running."""
+    return _warming.is_set()
+
+
+def warm_up(settings: Settings | None = None) -> None:
+    """Load the configured model so the first real request does not have to.
+
+    Failures are logged and swallowed: a warmup that cannot reach the model hub
+    must not stop the server starting, and the same error will surface properly
+    on the first real request.
+    """
+    settings = settings or get_settings()
+    _warming.set()
+    try:
+        get_model(settings)
+        logger.info("Warmup complete: %s ready", settings.whisper_model)
+    except Exception as exc:  # noqa: BLE001 - startup must not fail on this
+        logger.warning("Warmup failed for %s: %s", settings.whisper_model, exc)
+    finally:
+        _warming.clear()
+
+
 def model_is_loaded() -> bool:
     """True once any model has been loaded into the process cache."""
     return bool(_models)

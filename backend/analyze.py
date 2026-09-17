@@ -250,11 +250,53 @@ def analyze_transcript(
     return extraction, round(elapsed, 2)
 
 
-def ollama_available(settings: Settings | None = None) -> bool:
-    """Quick reachability check for /health. Does not verify the model exists."""
+def ollama_models(settings: Settings | None = None) -> list[str] | None:
+    """Names of the models Ollama has pulled, or None if it is unreachable.
+
+    None and [] mean different things: unreachable versus running but empty.
+    """
     settings = settings or get_settings()
     try:
         response = httpx.get(f"{settings.ollama_url}/api/tags", timeout=2.0)
-        return response.status_code == 200
-    except httpx.RequestError:
+        if response.status_code != 200:
+            return None
+        payload = response.json()
+    except (httpx.RequestError, ValueError):
+        return None
+
+    models = payload.get("models") if isinstance(payload, dict) else None
+    if not isinstance(models, list):
+        return []
+    return [m["name"] for m in models if isinstance(m, dict) and "name" in m]
+
+
+def model_matches(configured: str, available: str) -> bool:
+    """True if an available model satisfies the configured name.
+
+    Ollama stores an untagged pull as ``name:latest``, so ``llama3.2`` in the
+    config is satisfied by ``llama3.2:latest`` on disk.
+    """
+    if configured == available:
+        return True
+    return ":" not in configured and available == f"{configured}:latest"
+
+
+def ollama_model_available(
+    settings: Settings | None = None, models: list[str] | None = None
+) -> bool:
+    """Whether the configured model has actually been pulled.
+
+    Checked separately from reachability: a running Ollama without the model
+    fails only once the user has already recorded and waited.
+    """
+    settings = settings or get_settings()
+    if models is None:
+        models = ollama_models(settings)
+    if not models:
         return False
+    return any(model_matches(settings.ollama_model, name) for name in models)
+
+
+def ollama_available(settings: Settings | None = None) -> bool:
+    """Quick reachability check. Says nothing about which models exist."""
+    return ollama_models(settings) is not None
