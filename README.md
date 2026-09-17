@@ -138,14 +138,19 @@ right.
 | `POST /transcribe` | Multipart `audio` file &rarr; transcript JSON. Optional `model` and `vocabulary` fields |
 | `POST /analyze` | `{"transcript": "..."}` &rarr; structured fields plus what is missing |
 | `POST /build` | `{"extraction": {...}}` &rarr; the assembled prompt |
-| `POST /jobs/transcribe` | Same as `/transcribe`, but returns a job id |
-| `POST /jobs/analyze` | Same as `/analyze`, but returns a job id |
+| `POST /jobs/transcribe` | The same work, queued: returns a job id |
+| `POST /jobs/analyze` | The same work, queued: returns a job id |
 | `GET /jobs/{id}` | Poll state, progress and result |
 | `POST /jobs/{id}/cancel` | Ask a running job to stop |
 | `GET /sessions` | Session history, newest first |
 | `PUT /sessions` | Create or update a session |
 | `DELETE /sessions/{id}` | Delete one, or all with no id |
+| `DELETE /jobs/{id}` | Forget a finished job and its result |
 | `GET /docs` | Interactive OpenAPI docs |
+
+Each operation is offered twice: synchronously for scripts and `curl`, and as a
+job for the UI, which needs progress and cancellation. Only the waiting differs
+&mdash; the work itself is one function, so the two cannot drift apart.
 
 ```bash
 curl -s -X POST \

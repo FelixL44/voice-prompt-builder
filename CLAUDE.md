@@ -230,6 +230,13 @@ All settings live in `backend/config.py` and come from `VPB_*` env vars:
 - **SQLite runs in WAL mode.** Requests share a threadpool, so a reader and a
   writer overlap; the default rollback journal makes them collide and wait out
   the busy timeout.
+- **Each operation exists twice at the HTTP layer and once underneath.**
+  `/transcribe` and `/jobs/transcribe` (likewise `/analyze`) both call
+  `_transcription_response` / `_analysis_response`; only the waiting differs.
+  Keeping two copies had already let them drift: the synchronous upload path
+  missed the chunked size-check that the job path received, so it buffered
+  whole uploads before rejecting them. If you add behaviour to one route,
+  it belongs in the shared function.
 - **The two slow steps run as jobs** (`backend/jobs.py`), polled rather than
   awaited. Job state is in memory on purpose: a job whose thread died cannot be
   resumed, and persisting it would let the UI show something untrue after a

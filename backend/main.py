@@ -48,8 +48,6 @@ from backend.schemas import (
     TranscriptionResponse,
 )
 from backend.transcribe import (
-    EmptyAudioError,
-    FfmpegMissingError,
     TranscriptionError,
     ffmpeg_available,
     ffmpeg_version,
@@ -59,7 +57,6 @@ from backend.transcribe import (
     stage_upload,
     sweep_scratch,
     transcribe_file,
-    transcribe_upload,
     warm_up,
 )
 
@@ -217,6 +214,92 @@ def health() -> HealthResponse:
     )
 
 
+# ---------------------------------------------------------------------------
+# Shared work
+#
+# Each operation exists twice at the HTTP layer: once synchronously for scripts
+# and curl, once as a job for the UI, which needs progress and cancellation.
+# Only the waiting differs, so the work itself lives here once. Keeping two
+# copies had already let them drift -- the synchronous upload path missed a
+# size-check fix that the job path received.
+# ---------------------------------------------------------------------------
+
+
+async def _staged_upload(
+    request: Request,
+    audio: UploadFile,
+    model: str | None,
+    vocabulary: str | None,
+) -> tuple[Settings, Path, str]:
+    """Resolve per-request settings and put the upload on disk.
+
+    Returns:
+        The settings for this request, the staged file, and its original name.
+    """
+    try:
+        settings = for_request(get_settings(), model, vocabulary)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    data = await _read_upload(audio, request, settings.max_upload_bytes)
+    filename = audio.filename or "recording.webm"
+
+    logger.info(
+        "Transcribing %s (%.1f KB) with %s%s",
+        filename, len(data) / 1024, settings.whisper_model,
+        " + vocabulary" if vocabulary else "",
+    )
+    return settings, stage_upload(data, filename, settings), filename
+
+
+def _transcription_response(
+    staged: Path,
+    settings: Settings,
+    on_progress: object = None,
+    cancel: object = None,
+) -> TranscriptionResponse:
+    """Transcribe a staged file and shape the reply."""
+    result = transcribe_file(staged, settings, on_progress, cancel)  # type: ignore[arg-type]
+
+    logger.info(
+        "Done: %.1fs of audio in %.1fs (%d chars)",
+        result.duration, result.elapsed_s, len(result.text),
+    )
+    return TranscriptionResponse(
+        text=result.text,
+        language=result.language,
+        duration=result.duration,
+        model=result.model,
+        elapsed_s=result.elapsed_s,
+        segments=result.segments,
+    )
+
+
+def _analysis_response(
+    request: AnalysisRequest,
+    settings: Settings,
+    on_progress: object = None,
+    cancel: object = None,
+) -> AnalysisResponse:
+    """Extract a transcript and shape the reply.
+
+    Missing fields are computed here, from the extraction -- the model is never
+    asked what it failed to find.
+    """
+    extraction, elapsed = analyze_transcript(
+        request.transcript, settings, on_progress, cancel  # type: ignore[arg-type]
+    )
+    missing = find_missing(extraction, request.language)
+    logger.info("Extraction complete, %d field(s) missing", len(missing))
+
+    return AnalysisResponse(
+        extraction=extraction,
+        missing=missing,
+        model=settings.ollama_model,
+        elapsed_s=elapsed,
+    )
+
+
 @app.post(
     "/transcribe",
     response_model=TranscriptionResponse,
@@ -233,55 +316,21 @@ async def transcribe(
     model: str | None = Form(default=None),
     vocabulary: str | None = Form(default=None),
 ) -> TranscriptionResponse:
-    """Transcribe an uploaded recording.
+    """Transcribe an uploaded recording and wait for the result.
 
-    Accepts anything ffmpeg can decode: the browser's WebM/Opus blobs as well
-    as m4a/mp3/wav files picked from disk.
+    The job variant is what the UI uses; this one is for scripts and curl.
 
     Args:
         model: Optional size override (tiny/base/small/medium).
         vocabulary: Optional domain terms. Whisper is conditioned on these,
             which rescues names and acronyms at no cost in time.
     """
-    base_settings = get_settings()
-    try:
-        settings = for_request(base_settings, model, vocabulary)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-    data = await audio.read()
-    if len(data) > settings.max_upload_bytes:
-        limit_mb = settings.max_upload_bytes / 1_048_576
-        raise HTTPException(
-            status_code=413,
-            detail=f"Recording is larger than the {limit_mb:.0f} MB limit.",
-        )
-
-    filename = audio.filename or "recording.webm"
-    logger.info(
-        "Transcribing %s (%.1f KB) with %s%s",
-        filename, len(data) / 1024, settings.whisper_model,
-        " + vocabulary" if vocabulary else "",
-    )
+    settings, staged, _ = await _staged_upload(request, audio, model, vocabulary)
 
     # ffmpeg and Whisper both block for the whole recording. Run them in a
     # worker thread: on the event loop they would freeze every other request,
     # including /health, for the entire transcription.
-    # TranscriptionError subclasses are handled by the exception handler above.
-    result = await run_in_threadpool(transcribe_upload, data, filename, settings)
-
-    logger.info(
-        "Done: %.1fs of audio in %.1fs (%d chars)",
-        result.duration, result.elapsed_s, len(result.text),
-    )
-    return TranscriptionResponse(
-        text=result.text,
-        language=result.language,
-        duration=result.duration,
-        model=result.model,
-        elapsed_s=result.elapsed_s,
-        segments=result.segments,
-    )
+    return await run_in_threadpool(_transcription_response, staged, settings)
 
 
 @app.post(
@@ -293,6 +342,16 @@ async def transcribe(
         504: {"model": ErrorResponse},
     },
 )
+def analyze(request: AnalysisRequest) -> AnalysisResponse:
+    """Extract a transcript into structured fields and wait for the result.
+
+    The transcript arrives as JSON rather than as the recording, so the user's
+    edits in the transcript box are what gets analysed.
+    """
+    return _analysis_response(request, get_settings())
+
+
+
 def analyze(request: AnalysisRequest) -> AnalysisResponse:
     """Extract a transcript into structured fields with the local LLM.
 
@@ -349,31 +408,16 @@ async def start_transcription(
     vocabulary: str | None = Form(default=None),
 ) -> JobAccepted:
     """Queue a transcription and return immediately with its job id."""
-    base_settings = get_settings()
-    try:
-        settings = for_request(base_settings, model, vocabulary)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-    data = await _read_upload(audio, request, settings.max_upload_bytes)
-    filename = audio.filename or "recording.webm"
-
+    # Staged before the job is created: a queued job can wait minutes for a
+    # slot, and several waiting uploads held in memory would add up.
+    settings, staged, filename = await _staged_upload(request, audio, model, vocabulary)
     job = registry.create("transcribe", settings.max_active_jobs)
-
-    # Written to disk before the job starts: a queued job can wait minutes for
-    # a slot, and several waiting uploads held in memory would add up.
-    staged = stage_upload(data, filename, settings)
-    del data
 
     def work(current: Job) -> dict[str, object]:
         def progress(fraction: float, note: str) -> None:
             registry.update(current.id, progress=fraction, note=note)
 
-        result = transcribe_file(staged, settings, progress, current.cancel)
-        return TranscriptionResponse(
-            text=result.text, language=result.language, duration=result.duration,
-            model=result.model, elapsed_s=result.elapsed_s, segments=result.segments,
-        ).model_dump()
+        return _transcription_response(staged, settings, progress, current.cancel).model_dump()
 
     run_job(job, work)
     logger.info("Queued transcription %s for %s", job.id, filename)
@@ -390,15 +434,7 @@ def start_analysis(request: AnalysisRequest) -> JobAccepted:
         def progress(fraction: float | None, note: str) -> None:
             registry.update(current.id, progress=fraction, note=note)
 
-        extraction, elapsed = analyze_transcript(
-            request.transcript, settings, progress, current.cancel
-        )
-        return AnalysisResponse(
-            extraction=extraction,
-            missing=find_missing(extraction, request.language),
-            model=settings.ollama_model,
-            elapsed_s=elapsed,
-        ).model_dump()
+        return _analysis_response(request, settings, progress, current.cancel).model_dump()
 
     run_job(job, work)
     return JobAccepted(job_id=job.id, kind=job.kind)

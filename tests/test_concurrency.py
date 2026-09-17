@@ -60,7 +60,8 @@ def test_health_stays_responsive_during_a_transcription(monkeypatch) -> None:
         time.sleep(BLOCKING_SECONDS)
         return _canned_result()
 
-    monkeypatch.setattr(main_module, "transcribe_upload", slow_transcribe)
+    # Both the sync and job routes funnel through this one call.
+    monkeypatch.setattr(main_module, "transcribe_file", slow_transcribe)
 
     port = _free_port()
     config = uvicorn.Config(main_module.app, host="127.0.0.1", port=port, log_level="error")

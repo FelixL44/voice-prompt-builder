@@ -308,30 +308,36 @@ def test_oversized_upload_is_rejected(monkeypatch) -> None:
 def test_oversized_upload_is_refused_before_buffering(monkeypatch) -> None:
     """A declared length over the limit is refused without reading the body.
 
-    Otherwise a huge upload is fully resident in memory before being rejected.
+    Otherwise a huge upload sits fully in memory before being rejected. An
+    earlier version of this test only checked the status code, so it passed
+    while the synchronous route was still buffering first.
     """
-    from backend import main as main_module
+    from starlette.datastructures import UploadFile as StarletteUploadFile
+
     from backend.config import get_settings
 
     monkeypatch.setenv("VPB_MAX_UPLOAD_BYTES", "1024")
     get_settings.cache_clear()
 
     reads: list[int] = []
-    original = main_module.UploadFile.read
+    original = StarletteUploadFile.read
 
     async def counting_read(self, size: int = -1):  # type: ignore[no-untyped-def]
         reads.append(size)
         return await original(self, size)
 
-    monkeypatch.setattr(main_module.UploadFile, "read", counting_read)
+    monkeypatch.setattr(StarletteUploadFile, "read", counting_read)
 
     try:
-        response = client.post(
-            "/transcribe",
-            files={"audio": ("big.webm", b"x" * 100_000, "audio/webm")},
-            headers={"content-length": "100000"},
-        )
-        assert response.status_code == 413
+        for route in ("/transcribe", "/jobs/transcribe"):
+            reads.clear()
+            response = client.post(
+                route,
+                files={"audio": ("big.webm", b"x" * 100_000, "audio/webm")},
+                headers={"content-length": "100000"},
+            )
+            assert response.status_code == 413, route
+            assert reads == [], f"{route} read the body before refusing it: {reads}"
     finally:
         get_settings.cache_clear()
 
