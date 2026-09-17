@@ -64,6 +64,11 @@ def connect(settings: Settings | None = None) -> Iterator[sqlite3.Connection]:
 
     conn.row_factory = sqlite3.Row
     try:
+        # Requests run on a threadpool, so readers and a writer overlap. WAL
+        # lets them proceed together instead of colliding on the default
+        # rollback journal and waiting out the busy timeout.
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
         conn.executescript(SCHEMA)
         yield conn
         conn.commit()

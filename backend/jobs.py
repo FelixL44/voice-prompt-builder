@@ -23,9 +23,16 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-# How long a finished job stays readable before being swept. Long enough for a
-# slow UI poll or a reload, short enough that transcripts do not linger.
-RETENTION_SECONDS = 900
+# Fallback retention when no settings are supplied. The real value comes from
+# VPB_JOB_RETENTION_S: a finished job's result is the transcript, so this is a
+# privacy window, not merely a cache.
+RETENTION_SECONDS = 120
+
+
+class TooManyJobsError(Exception):
+    """The active-job limit is already reached."""
+
+    code = "too_many_jobs"
 
 
 class JobState(str, Enum):
@@ -81,12 +88,43 @@ class JobRegistry:
         self._lock = threading.Lock()
         self._retention = retention_seconds
 
-    def create(self, kind: str) -> Job:
+    def create(self, kind: str, max_active: int | None = None) -> Job:
+        """Register a new job.
+
+        Raises:
+            TooManyJobsError: ``max_active`` unfinished jobs already exist.
+        """
         job = Job(id=f"job-{uuid.uuid4().hex[:12]}", kind=kind)
         with self._lock:
             self._sweep_locked()
+
+            if max_active is not None:
+                active = sum(1 for j in self._jobs.values() if not j.state.finished)
+                if active >= max_active:
+                    raise TooManyJobsError(
+                        f"{active} jobs are already running or queued. "
+                        "Wait for one to finish, or cancel it."
+                    )
+
             self._jobs[job.id] = job
         return job
+
+    def release(self, job_id: str) -> bool:
+        """Forget a finished job now that the caller has its result.
+
+        Called once the client has stored the outcome, so the transcript is not
+        left sitting in memory for the whole retention window.
+        """
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if job is None or not job.state.finished:
+                return False
+            del self._jobs[job_id]
+            return True
+
+    def active(self) -> int:
+        with self._lock:
+            return sum(1 for job in self._jobs.values() if not job.state.finished)
 
     def get(self, job_id: str) -> Job | None:
         with self._lock:
@@ -143,6 +181,10 @@ class JobRegistry:
             job.progress = 1.0 if state is JobState.DONE else job.progress
             job.finished_at = time.monotonic()
             job.updated = job.finished_at
+
+    def set_retention(self, seconds: int) -> None:
+        """Adopt the configured retention. Settings are not known at import."""
+        self._retention = seconds
 
     def _sweep_locked(self) -> None:
         """Drop finished jobs past their retention. Caller holds the lock."""

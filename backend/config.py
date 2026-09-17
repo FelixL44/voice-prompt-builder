@@ -75,6 +75,21 @@ class Settings:
     small) while the user waits with no idea why.
     """
 
+    max_active_jobs: int = 4
+    """Unfinished jobs allowed at once.
+
+    Each holds a thread and a staged upload. Transcriptions queue behind the
+    slot semaphore anyway, so a large number only accumulates waiting work.
+    """
+
+    job_retention_s: int = 120
+    """How long a finished job stays readable.
+
+    Its result is the transcript, so this is a privacy window, not just a
+    cache. The client releases jobs explicitly once it has stored them; this
+    is only the backstop for a client that never comes back.
+    """
+
     max_concurrent_transcriptions: int = 1
     """Transcriptions allowed to run at once.
 
@@ -145,6 +160,8 @@ def get_settings() -> Settings:
         ffmpeg_path=_env_str("VPB_FFMPEG_PATH", "ffmpeg"),
         ffmpeg_timeout_s=_env_int("VPB_FFMPEG_TIMEOUT_S", 120),
         max_concurrent_transcriptions=_env_int("VPB_MAX_CONCURRENT_TRANSCRIPTIONS", 1),
+        max_active_jobs=_env_int("VPB_MAX_ACTIVE_JOBS", 4),
+        job_retention_s=_env_int("VPB_JOB_RETENTION_S", 120),
         warmup_on_startup=_env_bool("VPB_WARMUP", True),
         tmp_dir=Path(_env_str("VPB_TMP_DIR", str(PROJECT_ROOT / "tmp"))),
         ollama_url=_env_str("VPB_OLLAMA_URL", "http://localhost:11434").rstrip("/"),

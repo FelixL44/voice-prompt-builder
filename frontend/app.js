@@ -128,6 +128,7 @@ const STRINGS = {
     err_mic_failed: "Could not open the microphone ({name}). Is another app using it?",
     err_no_recorder: "This browser cannot record audio. Upload an audio file instead.",
     err_empty_recording: "The recording came out empty. Check your microphone and try again.",
+    err_too_many_jobs: "Too much is running at once. Wait for the current step to finish, or cancel it.",
   },
   de: {
     tagline: "Agentisches Prompt-Engineering",
@@ -224,6 +225,7 @@ const STRINGS = {
     err_mic_failed: "Mikrofon konnte nicht ge\u00f6ffnet werden ({name}). Nutzt eine andere App es gerade?",
     err_no_recorder: "Dieser Browser kann kein Audio aufnehmen. Lade stattdessen eine Datei hoch.",
     err_empty_recording: "Die Aufnahme war leer. Pr\u00fcfe dein Mikrofon und versuche es erneut.",
+    err_too_many_jobs: "Es l\u00e4uft schon zu viel gleichzeitig. Warte, bis der aktuelle Schritt fertig ist, oder brich ihn ab.",
   },
 };
 
@@ -839,14 +841,22 @@ async function awaitJob(jobId, onUpdate) {
       onUpdate?.(job);
       setProgress(job.progress);
 
-      if (job.state === "done") return job.result;
+      if (job.state === "done") {
+        // The result is in hand, so the server need not keep the transcript
+        // in memory for the rest of its retention window.
+        releaseJob(jobId);
+        return job.result;
+      }
       if (job.state === "cancelled") {
+        releaseJob(jobId);
         setWorkflow("cancelled", t("note_cancelled"));
         return null;
       }
       if (job.state === "error") {
+        const failure = { error: job.error_code, detail: job.error };
+        releaseJob(jobId);
         setWorkflow("fail", job.error || "");
-        showBanner(errorText({ error: job.error_code, detail: job.error }, 500));
+        showBanner(errorText(failure, 500));
         return null;
       }
     }
@@ -855,6 +865,11 @@ async function awaitJob(jobId, onUpdate) {
     ui.cancelBtn.hidden = true;
     setProgress(null);
   }
+}
+
+/** Tell the server to forget a finished job. Failure here is not important. */
+function releaseJob(jobId) {
+  fetch(`/jobs/${jobId}`, { method: "DELETE" }).catch(() => {});
 }
 
 async function cancelActiveJob() {

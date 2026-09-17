@@ -81,6 +81,8 @@ Every setting is an environment variable:
 | `VPB_MAX_AUDIO_SECONDS` | `1800` | 30 minutes; a size cap is not a length cap |
 | `VPB_OLLAMA_RESPONSE_RESERVE` | `512` | Context tokens held back for the reply |
 | `VPB_DB_PATH` | `./data/sessions.db` | Session history |
+| `VPB_MAX_ACTIVE_JOBS` | `4` | Unfinished jobs allowed at once |
+| `VPB_JOB_RETENTION_S` | `120` | How long a finished job stays readable |
 | `VPB_FFMPEG_PATH` | `ffmpeg` | |
 | `VPB_MAX_CONCURRENT_TRANSCRIPTIONS` | `1` | Queue rather than thrash a CPU |
 | `VPB_WARMUP` | `true` | Load the model at startup, not on first use |
@@ -314,6 +316,12 @@ tokens sent after every call and a large shortfall is logged as a warning.
 - Nothing is logged except durations and sizes &mdash; never transcript text.
 - Session history is written to `data/sessions.db` on this machine. It is the
   only thing the app keeps, it never leaves, and the settings pane clears it.
+- Working files are swept at startup as well as deleted after each run. A
+  `kill -9` or a power cut cannot run a cleanup handler, so anything found in
+  the working directory on the next start is an orphan and is removed.
+- A finished job holds its transcript in memory only until the browser collects
+  it; the client then releases it explicitly, and a short retention window is
+  the backstop for a client that never returns.
 - No telemetry, no analytics, no outbound requests beyond the model download.
 
 ## Tests

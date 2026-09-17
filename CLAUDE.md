@@ -213,6 +213,23 @@ All settings live in `backend/config.py` and come from `VPB_*` env vars:
   network. A connection is opened per call, never shared, because requests run
   on a threadpool and SQLite connections are not thread-safe. Only the language
   preference still lives in `localStorage`.
+- **Working files are swept at startup** (`sweep_scratch`), not only after each
+  run. A `finally` cannot run if the process is killed, which would leave the
+  user's audio on disk and break a promise the README makes. The sweep only
+  touches `job-` and `upload-` prefixed entries, since `VPB_TMP_DIR` may point
+  somewhere shared.
+- **Uploads are staged to disk before the job starts**, not carried in the
+  closure. A queued job can wait minutes for the transcription slot, and
+  several waiting uploads held in memory would add up to however much audio
+  was sent. `transcribe_file()` deletes the staged file in a `finally`.
+- **Finished jobs are released by the client** once it has the result, because
+  that result *is* the transcript. `VPB_JOB_RETENTION_S` (120s) is only the
+  backstop for a client that never comes back -- do not raise it casually.
+- **Active jobs are capped** (`VPB_MAX_ACTIVE_JOBS`, 4) and the cap is a 429.
+  Without it every POST spawns a thread and stages an upload, unbounded.
+- **SQLite runs in WAL mode.** Requests share a threadpool, so a reader and a
+  writer overlap; the default rollback journal makes them collide and wait out
+  the busy timeout.
 - **The two slow steps run as jobs** (`backend/jobs.py`), polled rather than
   awaited. Job state is in memory on purpose: a job whose thread died cannot be
   resumed, and persisting it would let the UI show something untrue after a

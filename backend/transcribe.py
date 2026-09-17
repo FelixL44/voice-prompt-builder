@@ -421,17 +421,67 @@ def transcribe_wav(
     )
 
 
+SCRATCH_PREFIX = "job-"
+STAGED_PREFIX = "upload-"
+
+
+def sweep_scratch(settings: Settings | None = None) -> int:
+    """Delete leftover working files. Returns how many were removed.
+
+    Cleanup normally happens in a ``finally``, but that cannot run if the
+    process is killed outright or the machine loses power, which would leave
+    the user's audio on disk. Nothing is in flight at startup, so anything
+    still here is an orphan.
+    """
+    settings = settings or get_settings()
+    if not settings.tmp_dir.exists():
+        return 0
+
+    removed = 0
+    for entry in settings.tmp_dir.iterdir():
+        if not entry.name.startswith((SCRATCH_PREFIX, STAGED_PREFIX)):
+            continue   # Not ours; leave it alone.
+        try:
+            if entry.is_dir():
+                shutil.rmtree(entry, ignore_errors=True)
+            else:
+                entry.unlink(missing_ok=True)
+            removed += 1
+        except OSError as exc:
+            logger.warning("Could not remove %s: %s", entry, exc)
+
+    if removed:
+        logger.info("Swept %d orphaned working file(s) from %s", removed, settings.tmp_dir)
+    return removed
+
+
+def stage_upload(data: bytes, filename: str, settings: Settings | None = None) -> Path:
+    """Write an upload to disk and return its path.
+
+    Queued jobs can wait minutes behind the transcription slot. Holding the
+    bytes in memory for that whole time means several queued uploads add up to
+    however much audio was sent; on disk they cost nothing but space, and the
+    sweep above cleans them up if we die holding one.
+    """
+    settings = settings or get_settings()
+    settings.tmp_dir.mkdir(parents=True, exist_ok=True)
+
+    suffix = Path(filename).suffix or ".bin"
+    path = settings.tmp_dir / f"{STAGED_PREFIX}{uuid.uuid4().hex[:12]}{suffix}"
+    path.write_bytes(data)
+    return path
+
+
 @contextmanager
 def _scratch_dir(settings: Settings) -> Iterator[Path]:
     """A per-request temp directory, removed even if transcription blows up."""
     settings.tmp_dir.mkdir(parents=True, exist_ok=True)
-    work = settings.tmp_dir / f"job-{uuid.uuid4().hex[:12]}"
+    work = settings.tmp_dir / f"{SCRATCH_PREFIX}{uuid.uuid4().hex[:12]}"
     work.mkdir()
     try:
         yield work
     finally:
         shutil.rmtree(work, ignore_errors=True)
-
 
 def transcribe_upload(
     data: bytes,
@@ -440,45 +490,62 @@ def transcribe_upload(
     on_progress: ProgressFn | None = None,
     cancel: threading.Event | None = None,
 ) -> TranscriptionResult:
-    """Convert raw uploaded audio bytes and transcribe them.
+    """Stage uploaded audio to disk and transcribe it.
 
-    The uploaded bytes and the converted WAV are both deleted before returning,
-    whatever the outcome: nothing recorded is kept on disk.
+    Everything written is deleted before returning, whatever the outcome:
+    nothing recorded is kept on disk.
     """
     settings = settings or get_settings()
     if not data:
         raise EmptyAudioError("The uploaded file was empty.")
 
-    # Keep the original extension; ffmpeg sniffs content but the hint helps.
-    suffix = Path(filename).suffix or ".bin"
+    staged = stage_upload(data, filename, settings)
+    return transcribe_file(staged, settings, on_progress, cancel)
 
-    # Queue rather than thrash: a CPU with no headroom serves two concurrent
-    # transcriptions more slowly than two consecutive ones.
-    with _scratch_dir(settings) as work:
-        raw_path = work / f"input{suffix}"
-        wav_path = work / "audio.wav"
-        raw_path.write_bytes(data)
 
+def transcribe_file(
+    source: Path,
+    settings: Settings | None = None,
+    on_progress: ProgressFn | None = None,
+    cancel: threading.Event | None = None,
+) -> TranscriptionResult:
+    """Transcribe an audio file already on disk, then delete it.
+
+    ``source`` is always removed, whatever the outcome. Queued jobs can wait
+    minutes behind the transcription slot, so the audio waits on disk rather
+    than in memory, where several queued uploads would add up.
+    """
+    settings = settings or get_settings()
+
+    try:
         # Checked before the queue: a two-hour upload should be refused
         # immediately, not after waiting behind someone else's job.
-        probed = probe_duration(raw_path, settings)
+        probed = probe_duration(source, settings)
         if probed is not None:
             _check_duration(probed, settings)
 
         if on_progress:
             on_progress(0.0, "waiting for a transcription slot")
 
+        # Queue rather than thrash: a CPU with no headroom serves two
+        # concurrent transcriptions more slowly than two consecutive ones.
         with _transcription_slots(settings):
             if cancel is not None and cancel.is_set():
                 raise CancelledError("Transcription cancelled before it started.")
-            if on_progress:
-                on_progress(0.0, "converting audio")
-            convert_to_wav(raw_path, wav_path, settings)
 
-            # Backstop for inputs whose metadata lied or was absent. Converting
-            # is far cheaper than transcribing, so this still saves the worst case.
-            actual = wav_duration(wav_path)
-            if actual is not None:
-                _check_duration(actual, settings)
+            with _scratch_dir(settings) as work:
+                wav_path = work / "audio.wav"
+                if on_progress:
+                    on_progress(0.0, "converting audio")
+                convert_to_wav(source, wav_path, settings)
 
-            return transcribe_wav(wav_path, settings, on_progress, cancel)
+                # Backstop for inputs whose metadata lied or was absent.
+                # Converting is far cheaper than transcribing, so this still
+                # saves the worst case.
+                actual = wav_duration(wav_path)
+                if actual is not None:
+                    _check_duration(actual, settings)
+
+                return transcribe_wav(wav_path, settings, on_progress, cancel)
+    finally:
+        source.unlink(missing_ok=True)

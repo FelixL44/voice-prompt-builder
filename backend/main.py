@@ -24,7 +24,7 @@ from backend.analyze import (
     ollama_model_available,
     ollama_models,
 )
-from backend.jobs import Job, JobState, registry, run_job
+from backend.jobs import Job, TooManyJobsError, registry, run_job
 from backend.builder import (
     EmptyPromptError,
     build_prompt,
@@ -56,6 +56,9 @@ from backend.transcribe import (
     loaded_models,
     model_is_loaded,
     model_is_warming,
+    stage_upload,
+    sweep_scratch,
+    transcribe_file,
     transcribe_upload,
     warm_up,
 )
@@ -98,6 +101,11 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
     task: asyncio.Task[None] | None = None
 
+    # Anything left in the working directory is an orphan: cleanup runs in a
+    # finally, which cannot happen if the process was killed outright.
+    registry.set_retention(settings.job_retention_s)
+    sweep_scratch(settings)
+
     if settings.warmup_on_startup:
         logger.info("Warming up %s in the background", settings.whisper_model)
         task = asyncio.create_task(asyncio.to_thread(warm_up, settings))
@@ -107,6 +115,9 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     finally:
         if task is not None and not task.done():
             task.cancel()
+        # Best effort: workers are daemon threads and may die mid-write, so the
+        # startup sweep remains the real guarantee.
+        sweep_scratch(settings)
 
 
 app = FastAPI(
@@ -131,6 +142,7 @@ _STATUS_BY_CODE = {
     "transcript_too_long": 422,
     "cancelled": 499,
     "store_unavailable": 503,
+    "too_many_jobs": 429,
 }
 
 
@@ -148,6 +160,7 @@ app.add_exception_handler(TranscriptionError, _typed_error_handler)  # type: ign
 app.add_exception_handler(AnalysisError, _typed_error_handler)  # type: ignore[arg-type]
 app.add_exception_handler(EmptyPromptError, _typed_error_handler)  # type: ignore[arg-type]
 app.add_exception_handler(store.StoreError, _typed_error_handler)  # type: ignore[arg-type]
+app.add_exception_handler(TooManyJobsError, _typed_error_handler)  # type: ignore[arg-type]
 
 
 def _too_large(limit: int) -> HTTPException:
@@ -344,13 +357,19 @@ async def start_transcription(
 
     data = await _read_upload(audio, request, settings.max_upload_bytes)
     filename = audio.filename or "recording.webm"
-    job = registry.create("transcribe")
+
+    job = registry.create("transcribe", settings.max_active_jobs)
+
+    # Written to disk before the job starts: a queued job can wait minutes for
+    # a slot, and several waiting uploads held in memory would add up.
+    staged = stage_upload(data, filename, settings)
+    del data
 
     def work(current: Job) -> dict[str, object]:
         def progress(fraction: float, note: str) -> None:
             registry.update(current.id, progress=fraction, note=note)
 
-        result = transcribe_upload(data, filename, settings, progress, current.cancel)
+        result = transcribe_file(staged, settings, progress, current.cancel)
         return TranscriptionResponse(
             text=result.text, language=result.language, duration=result.duration,
             model=result.model, elapsed_s=result.elapsed_s, segments=result.segments,
@@ -365,7 +384,7 @@ async def start_transcription(
 def start_analysis(request: AnalysisRequest) -> JobAccepted:
     """Queue an extraction and return immediately with its job id."""
     settings = get_settings()
-    job = registry.create("analyze")
+    job = registry.create("analyze", settings.max_active_jobs)
 
     def work(current: Job) -> dict[str, object]:
         def progress(fraction: float | None, note: str) -> None:
@@ -392,6 +411,20 @@ def job_status(job_id: str) -> JobStatus:
     if job is None:
         raise HTTPException(status_code=404, detail="No such job, or it has expired.")
     return JobStatus(**job.snapshot())
+
+
+@app.delete("/jobs/{job_id}", responses={404: {"model": ErrorResponse}})
+def release_job(job_id: str) -> dict[str, str]:
+    """Forget a finished job.
+
+    The client calls this once it has stored the result, so a transcript is not
+    left in memory for the whole retention window.
+    """
+    if not registry.release(job_id):
+        raise HTTPException(
+            status_code=404, detail="No such job, or it has not finished yet."
+        )
+    return {"status": "released"}
 
 
 @app.post("/jobs/{job_id}/cancel", response_model=JobStatus,
