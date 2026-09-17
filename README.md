@@ -71,6 +71,7 @@ Every setting is an environment variable:
 | `VPB_BEAM_SIZE` | `5` | Lower is faster, slightly less accurate |
 | `VPB_MAX_UPLOAD_BYTES` | `104857600` | 100 MB |
 | `VPB_FFMPEG_PATH` | `ffmpeg` | |
+| `VPB_MAX_CONCURRENT_TRANSCRIPTIONS` | `1` | Queue rather than thrash a CPU |
 | `VPB_OLLAMA_MODEL` | `llama3.2:3b` | Any pulled model; 3B&ndash;8B is the usable range |
 | `VPB_OLLAMA_URL` | `http://localhost:11434` | |
 | `VPB_OLLAMA_TIMEOUT_S` | `600` | |

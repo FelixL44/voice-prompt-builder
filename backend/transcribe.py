@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 import shutil
 import subprocess
+import threading
 import time
 import uuid
 from collections.abc import Iterator
@@ -152,7 +153,29 @@ def convert_to_wav(src: Path, dst: Path, settings: Settings | None = None) -> Pa
 # Keyed by (size, device, compute_type). Holding several lets the UI switch
 # between sizes without paying the load cost each time; int8 models are small
 # enough (~150 MB base, ~500 MB small) that keeping a few resident is fine.
+#
+# Requests run in a threadpool, so this dict is touched concurrently: the lock
+# stops two requests loading the same model twice, which would double both the
+# wait and the memory.
 _models: dict[tuple[str, str, str], WhisperModel] = {}
+_models_lock = threading.Lock()
+
+# Limits how many transcriptions run at once. Built lazily because its size
+# comes from settings, and guarded by its own lock for the same reason as above.
+_slots: threading.BoundedSemaphore | None = None
+_slots_size: int | None = None
+_slots_lock = threading.Lock()
+
+
+def _transcription_slots(settings: Settings) -> threading.BoundedSemaphore:
+    """The semaphore limiting concurrent transcriptions."""
+    global _slots, _slots_size
+
+    with _slots_lock:
+        if _slots is None or _slots_size != settings.max_concurrent_transcriptions:
+            _slots = threading.BoundedSemaphore(settings.max_concurrent_transcriptions)
+            _slots_size = settings.max_concurrent_transcriptions
+        return _slots
 
 
 def model_is_loaded() -> bool:
@@ -173,26 +196,36 @@ def get_model(settings: Settings | None = None) -> WhisperModel:
     """
     settings = settings or get_settings()
     key = (settings.whisper_model, settings.device, settings.compute_type)
+
+    # Checked before taking the lock, so warm requests never serialise on it.
     cached = _models.get(key)
     if cached is not None:
         return cached
 
-    logger.info("Loading Whisper model %s (%s, %s)", *key)
-    started = time.monotonic()
-    try:
-        model = WhisperModel(
-            settings.whisper_model,
-            device=settings.device,
-            compute_type=settings.compute_type,
-        )
-    except Exception as exc:  # noqa: BLE001 - surfaced verbatim to the user
-        raise ModelLoadError(
-            f"Could not load Whisper model {settings.whisper_model!r}: {exc}"
-        ) from exc
+    with _models_lock:
+        # Re-checked: another thread may have loaded it while we waited.
+        cached = _models.get(key)
+        if cached is not None:
+            return cached
 
-    logger.info("Model %s ready in %.1fs", settings.whisper_model, time.monotonic() - started)
-    _models[key] = model
-    return model
+        logger.info("Loading Whisper model %s (%s, %s)", *key)
+        started = time.monotonic()
+        try:
+            model = WhisperModel(
+                settings.whisper_model,
+                device=settings.device,
+                compute_type=settings.compute_type,
+            )
+        except Exception as exc:  # noqa: BLE001 - surfaced verbatim to the user
+            raise ModelLoadError(
+                f"Could not load Whisper model {settings.whisper_model!r}: {exc}"
+            ) from exc
+
+        logger.info(
+            "Model %s ready in %.1fs", settings.whisper_model, time.monotonic() - started
+        )
+        _models[key] = model
+        return model
 
 
 @dataclass(frozen=True)
@@ -283,9 +316,12 @@ def transcribe_upload(
     # Keep the original extension; ffmpeg sniffs content but the hint helps.
     suffix = Path(filename).suffix or ".bin"
 
-    with _scratch_dir(settings) as work:
-        raw_path = work / f"input{suffix}"
-        wav_path = work / "audio.wav"
-        raw_path.write_bytes(data)
-        convert_to_wav(raw_path, wav_path, settings)
-        return transcribe_wav(wav_path, settings)
+    # Queue rather than thrash: a CPU with no headroom serves two concurrent
+    # transcriptions more slowly than two consecutive ones.
+    with _transcription_slots(settings):
+        with _scratch_dir(settings) as work:
+            raw_path = work / f"input{suffix}"
+            wav_path = work / "audio.wav"
+            raw_path.write_bytes(data)
+            convert_to_wav(raw_path, wav_path, settings)
+            return transcribe_wav(wav_path, settings)

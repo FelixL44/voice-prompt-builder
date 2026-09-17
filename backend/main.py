@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
@@ -51,6 +52,10 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
 )
 logger = logging.getLogger("vpb")
+
+# Uploads are read in pieces so an oversized file is rejected partway through
+# rather than after it is all in memory.
+UPLOAD_CHUNK_BYTES = 1024 * 1024
 
 class NoCacheStaticFiles(StaticFiles):
     """Serve static assets with revalidation forced.
@@ -103,6 +108,32 @@ app.add_exception_handler(AnalysisError, _typed_error_handler)  # type: ignore[a
 app.add_exception_handler(EmptyPromptError, _typed_error_handler)  # type: ignore[arg-type]
 
 
+def _too_large(limit: int) -> HTTPException:
+    return HTTPException(
+        status_code=413,
+        detail=f"Recording is larger than the {limit / 1_048_576:.0f} MB limit.",
+    )
+
+
+async def _read_upload(audio: UploadFile, request: Request, limit: int) -> bytes:
+    """Read an upload into memory, refusing anything over ``limit``.
+
+    The declared length is checked first so an oversized upload is refused
+    outright, and the body is then read in chunks so a missing or dishonest
+    Content-Length cannot still fill memory.
+    """
+    declared = request.headers.get("content-length")
+    if declared and declared.isdigit() and int(declared) > limit:
+        raise _too_large(limit)
+
+    buffer = bytearray()
+    while chunk := await audio.read(UPLOAD_CHUNK_BYTES):
+        buffer.extend(chunk)
+        if len(buffer) > limit:
+            raise _too_large(limit)
+    return bytes(buffer)
+
+
 @app.get("/health", response_model=HealthResponse)
 def health() -> HealthResponse:
     """Report whether the machine is actually ready to transcribe.
@@ -136,6 +167,7 @@ def health() -> HealthResponse:
     },
 )
 async def transcribe(
+    request: Request,
     audio: UploadFile = File(...),
     model: str | None = Form(default=None),
     vocabulary: str | None = Form(default=None),
@@ -171,8 +203,11 @@ async def transcribe(
         " + vocabulary" if vocabulary else "",
     )
 
+    # ffmpeg and Whisper both block for the whole recording. Run them in a
+    # worker thread: on the event loop they would freeze every other request,
+    # including /health, for the entire transcription.
     # TranscriptionError subclasses are handled by the exception handler above.
-    result = transcribe_upload(data, filename, settings)
+    result = await run_in_threadpool(transcribe_upload, data, filename, settings)
 
     logger.info(
         "Done: %.1fs of audio in %.1fs (%d chars)",

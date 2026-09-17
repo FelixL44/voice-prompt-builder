@@ -276,3 +276,67 @@ def test_build_accepts_a_partial_extraction() -> None:
     body = response.json()
     assert body["sections"] == ["task"]
     assert "<task>" in body["prompt"]
+
+
+# ---------------------------------------------------------------------------
+# Upload limits
+# ---------------------------------------------------------------------------
+
+
+def test_oversized_upload_is_rejected(monkeypatch) -> None:
+    """An upload over the limit is refused rather than transcribed."""
+    from backend.config import get_settings
+
+    monkeypatch.setenv("VPB_MAX_UPLOAD_BYTES", "1024")
+    get_settings.cache_clear()
+
+    try:
+        response = client.post(
+            "/transcribe",
+            files={"audio": ("big.webm", b"x" * 5000, "audio/webm")},
+        )
+        assert response.status_code == 413
+        assert "larger than" in response.json()["detail"]
+    finally:
+        get_settings.cache_clear()
+
+
+def test_oversized_upload_is_refused_before_buffering(monkeypatch) -> None:
+    """A declared length over the limit is refused without reading the body.
+
+    Otherwise a huge upload is fully resident in memory before being rejected.
+    """
+    from backend import main as main_module
+    from backend.config import get_settings
+
+    monkeypatch.setenv("VPB_MAX_UPLOAD_BYTES", "1024")
+    get_settings.cache_clear()
+
+    reads: list[int] = []
+    original = main_module.UploadFile.read
+
+    async def counting_read(self, size: int = -1):  # type: ignore[no-untyped-def]
+        reads.append(size)
+        return await original(self, size)
+
+    monkeypatch.setattr(main_module.UploadFile, "read", counting_read)
+
+    try:
+        response = client.post(
+            "/transcribe",
+            files={"audio": ("big.webm", b"x" * 100_000, "audio/webm")},
+            headers={"content-length": "100000"},
+        )
+        assert response.status_code == 413
+    finally:
+        get_settings.cache_clear()
+
+
+def test_upload_within_the_limit_is_accepted() -> None:
+    """The cap must not reject ordinary recordings; this one fails later."""
+    response = client.post(
+        "/transcribe", files={"audio": ("small.webm", b"not audio", "audio/webm")}
+    )
+
+    # Rejected for being undecodable, not for being too large.
+    assert response.status_code == 400

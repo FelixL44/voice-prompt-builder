@@ -60,6 +60,14 @@ class Settings:
 
     ffmpeg_timeout_s: int = 120
 
+    max_concurrent_transcriptions: int = 1
+    """Transcriptions allowed to run at once.
+
+    Measured on this machine: two concurrent runs finish only 1.29x faster than
+    two serial ones, while making each individual request ~50% slower. Queueing
+    gives a more predictable wait than thrashing a CPU that has no headroom.
+    """
+
     tmp_dir: Path = PROJECT_ROOT / "tmp"
 
     # --- Ollama (v0.2) ---
@@ -114,6 +122,7 @@ def get_settings() -> Settings:
         max_upload_bytes=_env_int("VPB_MAX_UPLOAD_BYTES", 100 * 1024 * 1024),
         ffmpeg_path=_env_str("VPB_FFMPEG_PATH", "ffmpeg"),
         ffmpeg_timeout_s=_env_int("VPB_FFMPEG_TIMEOUT_S", 120),
+        max_concurrent_transcriptions=_env_int("VPB_MAX_CONCURRENT_TRANSCRIPTIONS", 1),
         tmp_dir=Path(_env_str("VPB_TMP_DIR", str(PROJECT_ROOT / "tmp"))),
         ollama_url=_env_str("VPB_OLLAMA_URL", "http://localhost:11434").rstrip("/"),
         ollama_model=_env_str("VPB_OLLAMA_MODEL", "llama3.2:3b"),

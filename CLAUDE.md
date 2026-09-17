@@ -174,6 +174,25 @@ All settings live in `backend/config.py` and come from `VPB_*` env vars:
 - **Section order is deliberate**: context first (long reference material),
   then task, then the qualifiers, with `output_format` and `success_criteria`
   last because formatting instructions hold best nearest generation.
+- **`/transcribe` must keep its blocking work off the event loop.** It is
+  `async def` (it needs `await audio.read()`), so ffmpeg and Whisper run via
+  `run_in_threadpool`. Calling them directly froze every other request,
+  including `/health`, for the whole transcription -- measured at 8.9s for a
+  22s clip, so ~2 minutes for a 5-minute recording. `tests/test_concurrency.py`
+  guards this with a stubbed 3s transcription; it stubs deliberately, because
+  a real short clip finishes before the probe lands and an earlier version of
+  that test passed with the bug present.
+- **`get_model` uses double-checked locking.** Requests share a threadpool, so
+  two could otherwise load the same model twice.
+- **Concurrent transcriptions are capped at one** by default
+  (`VPB_MAX_CONCURRENT_TRANSCRIPTIONS`). Measured: two at once finish only
+  1.29x faster than two in sequence while making each ~50% slower, so queueing
+  is the better trade on a CPU with no headroom. A single `WhisperModel` is
+  safe across threads -- verified, output was byte-identical -- so this is a
+  resource decision, not a safety one.
+- **Uploads are size-checked before being buffered**: the declared
+  Content-Length is refused outright, then the body is read in 1 MB chunks so a
+  missing or dishonest header still cannot fill memory.
 - **The model name is allow-listed** (`ALLOWED_MODELS`) because the per-request
   override reaches the Hugging Face hub; it must never be free-form.
 - **Code, not the model, decides what is missing** in v0.3 (null/empty fields).
