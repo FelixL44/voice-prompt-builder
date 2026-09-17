@@ -28,6 +28,16 @@ DEFAULT_INITIAL_PROMPT = (
 
 MAX_VOCABULARY_CHARS = 600
 
+# What a recording is answering, added to the decoding hint.
+#
+# Measured on this project, it makes little difference on its own: the same
+# short answer came back identically with and without the question. It is kept
+# because it is free and may help an ambiguous one-word reply, but it is not
+# the lever that matters -- vocabulary and model size are. On a clip that
+# `base` rendered as "Latin-Cubanche Marks", the vocabulary hint recovered
+# "markdown" and "RFC", and `small` got the whole phrase right.
+MAX_CONTEXT_CHARS = 200
+
 
 @dataclass(frozen=True)
 class Settings:
@@ -186,15 +196,26 @@ def get_settings() -> Settings:
     )
 
 
+def _as_sentence(text: str) -> str:
+    """End a hint fragment with punctuation, without doubling what is there."""
+    text = text.strip()
+    return text if text.endswith((".", "?", "!")) else f"{text}."
+
+
 def for_request(
     settings: Settings,
     model: str | None = None,
     vocabulary: str | None = None,
+    context: str | None = None,
 ) -> Settings:
     """Apply per-request overrides on top of the base settings.
 
-    The UI lets each recording pick a model size and supply domain vocabulary,
-    so those two are resolved per request rather than per process.
+    The UI lets each recording pick a model size, supply domain vocabulary, and
+    say what the recording is answering, so all three resolve per request
+    rather than per process.
+
+    Args:
+        context: What this recording is a reply to, e.g. the follow-up question.
 
     Raises:
         ValueError: the requested model is not one we allow.
@@ -208,10 +229,16 @@ def for_request(
             )
         overrides["whisper_model"] = model
 
+    # Ordered by how much each narrows the decoding, since Whisper weights the
+    # start of the hint most and the whole thing shares a 224-token window.
+    pieces: list[str] = []
     if vocabulary and vocabulary.strip():
-        # Prepend the user's terms: Whisper weights the start of the hint most,
-        # and truncating protects the shared 224-token context window.
-        terms = vocabulary.strip()[:MAX_VOCABULARY_CHARS]
-        overrides["initial_prompt"] = f"{terms}. {settings.initial_prompt}"
+        pieces.append(vocabulary.strip()[:MAX_VOCABULARY_CHARS])
+    if context and context.strip():
+        pieces.append(context.strip()[:MAX_CONTEXT_CHARS])
+
+    if pieces:
+        pieces.append(settings.initial_prompt)
+        overrides["initial_prompt"] = " ".join(_as_sentence(p) for p in pieces if p)
 
     return replace(settings, **overrides) if overrides else settings

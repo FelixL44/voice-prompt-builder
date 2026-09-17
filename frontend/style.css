@@ -706,3 +706,48 @@ select:focus, .settings textarea:focus { outline: none; border-color: var(--acce
 }
 .session-list li:hover .session-delete { opacity: 1; }
 .session-delete:hover { background: var(--danger-soft); color: var(--danger); }
+
+/* ── Voice answers ─────────────────────────────────────────────────────── */
+
+.fields li { grid-template-columns: 132px 1fr auto; }
+
+.field-mic {
+  flex: none;
+  width: 30px; height: 30px;
+  margin-top: 4px;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+  color: var(--muted);
+  cursor: pointer;
+  transition: border-color .15s, color .15s, background .15s;
+}
+.field-mic:hover:not(:disabled) { border-color: var(--accent); color: var(--accent-ink); }
+.field-mic:disabled { opacity: .4; cursor: not-allowed; }
+
+.field-mic.recording {
+  border-color: var(--danger);
+  background: var(--danger);
+  color: #fff;
+  animation: pulse 1.3s ease-in-out infinite;
+}
+.field-mic.busy { border-color: var(--accent); color: var(--accent-ink); }
+.field-mic.busy svg { animation: spin .9s linear infinite; }
+
+/* A short answer is capped, so show how much of it is used up. */
+.field-answer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+  font-size: 11.5px;
+  color: var(--danger);
+  font-variant-numeric: tabular-nums;
+}
+.field-answer[hidden] { display: none; }
+
+@media (max-width: 560px) {
+  .fields li { grid-template-columns: 1fr auto; }
+}

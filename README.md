@@ -243,6 +243,31 @@ Extracted *values* follow whatever language you actually spoke.
 Every number in the interface is a real measurement &mdash; actual engine,
 actual elapsed time, actual cache size. There is no decorative telemetry.
 
+## Answering out loud (v1)
+
+Every field in the variables panel has a microphone. Click it, say the answer,
+click again to stop, and the transcript is appended to that field &mdash;
+appended, not substituted, so a second answer adds to the first and a typed
+correction is never destroyed. List fields split a spoken answer at sentence
+boundaries, because "Fast. Cheap. Local." is how people say a list aloud.
+
+Only one recording runs at a time; the other microphones and the main recorder
+disable themselves while one is active, since they would otherwise compete for
+the device and for the single transcription slot.
+
+The question being answered is sent along as decoding context. **Measured on
+this project, that makes little difference on its own** &mdash; the same short
+answer came back identically with and without it. It is kept because it is free
+and may help an ambiguous one-word reply, but the levers that demonstrably work
+on a short answer are the vocabulary box and the model size. On one clip:
+
+| Setting | Result (truth: "A markdown RFC with latency benchmarks") |
+|---|---|
+| `base`, nothing | "Armour, down-RFC with Latin-Cubanche Marks" |
+| `base` + question | "Armagedown, F.C. with Latin Cubanche Marks" |
+| `base` + vocabulary | "A markdown, RFC with latin-cubain-schmarks" |
+| `small` + vocabulary | "Markdown RFC with latency benchmarks" |
+
 ## Filling the gaps (v0.3)
 
 Every extracted field is editable in the UI, not only the empty ones: the model
@@ -366,8 +391,9 @@ machines without `say` or `ffmpeg`.
       leaving it blank
 - [x] **v0.4** &mdash; deterministic template assembles the final prompt with
       XML-style sections, copy button, token estimate
-- [ ] **v1** &mdash; voice answers to follow-ups, URL detection with fetched
-      summaries, target-model profiles, prompt history
+- [x] **v1** &mdash; voice answers to follow-ups, prompt history
+- [ ] **v1, remaining** &mdash; URL detection with fetched summaries,
+      target-model profiles, session export and search
 
 ## How it works
 

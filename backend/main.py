@@ -230,6 +230,7 @@ async def _staged_upload(
     audio: UploadFile,
     model: str | None,
     vocabulary: str | None,
+    context: str | None = None,
 ) -> tuple[Settings, Path, str]:
     """Resolve per-request settings and put the upload on disk.
 
@@ -237,7 +238,7 @@ async def _staged_upload(
         The settings for this request, the staged file, and its original name.
     """
     try:
-        settings = for_request(get_settings(), model, vocabulary)
+        settings = for_request(get_settings(), model, vocabulary, context)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -315,6 +316,7 @@ async def transcribe(
     audio: UploadFile = File(...),
     model: str | None = Form(default=None),
     vocabulary: str | None = Form(default=None),
+    context: str | None = Form(default=None),
 ) -> TranscriptionResponse:
     """Transcribe an uploaded recording and wait for the result.
 
@@ -324,8 +326,11 @@ async def transcribe(
         model: Optional size override (tiny/base/small/medium).
         vocabulary: Optional domain terms. Whisper is conditioned on these,
             which rescues names and acronyms at no cost in time.
+        context: What this recording is answering, added to the decoding hint.
+            Measured to make little difference on its own -- `vocabulary` and
+            the model size are what actually improve a short spoken answer.
     """
-    settings, staged, _ = await _staged_upload(request, audio, model, vocabulary)
+    settings, staged, _ = await _staged_upload(request, audio, model, vocabulary, context)
 
     # ffmpeg and Whisper both block for the whole recording. Run them in a
     # worker thread: on the event loop they would freeze every other request,
@@ -406,11 +411,14 @@ async def start_transcription(
     audio: UploadFile = File(...),
     model: str | None = Form(default=None),
     vocabulary: str | None = Form(default=None),
+    context: str | None = Form(default=None),
 ) -> JobAccepted:
     """Queue a transcription and return immediately with its job id."""
     # Staged before the job is created: a queued job can wait minutes for a
     # slot, and several waiting uploads held in memory would add up.
-    settings, staged, filename = await _staged_upload(request, audio, model, vocabulary)
+    settings, staged, filename = await _staged_upload(
+        request, audio, model, vocabulary, context
+    )
     job = registry.create("transcribe", settings.max_active_jobs)
 
     def work(current: Job) -> dict[str, object]:

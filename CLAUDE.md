@@ -267,6 +267,19 @@ All settings live in `backend/config.py` and come from `VPB_*` env vars:
   add `display` at any time, so the guard is global rather than per-selector.
   `tests/test_frontend_parity.py` asserts the rule exists with `!important`,
   and that every element the JS reveals starts out `hidden` in the markup.
+- **Every field can be answered aloud.** One recording at a time: the other
+  mics and the main recorder disable while one runs, or they compete for the
+  device and the single transcription slot. Answers are **appended**, never
+  substituted, so a second answer adds to the first and a typed correction
+  survives. `splitSpokenList()` breaks a list answer at sentence boundaries,
+  which is how people say lists out loud; it lives as a named function so the
+  test can run the real thing rather than a copy of its regex.
+- **The `context` field is honest dead weight, not a proven win.** It passes the
+  question into the decoding hint. Measured here it changed nothing on its own:
+  identical output with and without. Vocabulary and model size are what rescue
+  a short answer (`base` + vocabulary recovered "markdown"/"RFC"; `small` got
+  the phrase right). Do not restore the claim that it "narrows decoding
+  considerably" -- that was written before it was measured, and it was wrong.
 - **The UI is bilingual (en/de)**; `STRINGS` in `app.js` holds one flat table
   per language and `tests/test_i18n.py` asserts they have identical keys and
   match the backend's languages. Backend errors are translated **by their

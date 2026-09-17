@@ -19,6 +19,7 @@ const MAX_UPLOAD_SECONDS = 1800;   // Mirrors VPB_MAX_AUDIO_SECONDS.
 const WARN_SECONDS = 270;
 const WAVE_BARS = 56;
 const MAX_VOCABULARY_CHARS = 600;   // Mirrors backend/config.py.
+const MAX_ANSWER_SECONDS = 60;      // A follow-up answer is a sentence or two.
 
 
 /**
@@ -129,6 +130,11 @@ const STRINGS = {
     err_no_recorder: "This browser cannot record audio. Upload an audio file instead.",
     err_empty_recording: "The recording came out empty. Check your microphone and try again.",
     err_too_many_jobs: "Too much is running at once. Wait for the current step to finish, or cancel it.",
+    answer_aloud: "Answer this out loud",
+    answer_stop: "Stop and transcribe",
+    answer_recording: "Listening\u2014 {seconds}s left",
+    answer_transcribing: "Transcribing your answer\u2026",
+    answer_empty: "Nothing was heard. Try again, closer to the microphone.",
   },
   de: {
     tagline: "Agentisches Prompt-Engineering",
@@ -226,6 +232,11 @@ const STRINGS = {
     err_no_recorder: "Dieser Browser kann kein Audio aufnehmen. Lade stattdessen eine Datei hoch.",
     err_empty_recording: "Die Aufnahme war leer. Pr\u00fcfe dein Mikrofon und versuche es erneut.",
     err_too_many_jobs: "Es l\u00e4uft schon zu viel gleichzeitig. Warte, bis der aktuelle Schritt fertig ist, oder brich ihn ab.",
+    answer_aloud: "Diese Frage laut beantworten",
+    answer_stop: "Stoppen und transkribieren",
+    answer_recording: "H\u00f6re zu \u2014 noch {seconds}s",
+    answer_transcribing: "Antwort wird transkribiert\u2026",
+    answer_empty: "Nichts geh\u00f6rt. Versuch es noch einmal, n\u00e4her am Mikrofon.",
   },
 };
 
@@ -993,6 +1004,227 @@ function buildFieldInput(name, value, question) {
   return input;
 }
 
+const MIC_ICON =
+  '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" ' +
+  'stroke-width="2" stroke-linecap="round"><path d="M12 2a3 3 0 0 1 3 3v6a3 3 0 0 1-6 0V5a3 3 0 0 1 3-3z"/>' +
+  '<path d="M19 10v1a7 7 0 0 1-14 0v-1M12 18v4"/></svg>';
+
+const STOP_ICON =
+  '<svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor" ' +
+  'stroke="none"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>';
+
+const SPIN_ICON =
+  '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" ' +
+  'stroke-width="2" stroke-linecap="round"><path d="M12 3a9 9 0 1 0 9 9"/></svg>';
+
+/**
+ * State of the one field recording that may be in flight.
+ *
+ * Only one at a time, and never alongside the main recorder: they would
+ * compete for the microphone and for the transcription slot.
+ */
+const answer = { field: null, recorder: null, stream: null, timer: null, startedAt: 0 };
+
+/** The mic button that records a spoken answer for one field. */
+function buildFieldMic(name, question) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "field-mic";
+  button.dataset.mic = name;
+  button.innerHTML = MIC_ICON;
+  button.title = t("answer_aloud");
+  button.setAttribute("aria-label", t("answer_aloud"));
+
+  button.addEventListener("click", () => {
+    if (answer.field === name) stopFieldAnswer();
+    else startFieldAnswer(name, question);
+  });
+  return button;
+}
+
+/** Disable every other mic while one is busy, so they cannot overlap. */
+function setMicsEnabled(enabled, except = null) {
+  for (const button of ui.fieldList.querySelectorAll(".field-mic")) {
+    button.disabled = !enabled && button.dataset.mic !== except;
+  }
+  ui.recordBtn.disabled = !enabled;
+}
+
+async function startFieldAnswer(name, question) {
+  if (answer.field || (rec.recorder && rec.recorder.state === "recording")) return;
+  clearBanner();
+
+  if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) {
+    showBanner(t("err_no_recorder"));
+    return;
+  }
+
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  } catch (err) {
+    const denied = err.name === "NotAllowedError" || err.name === "SecurityError";
+    showBanner(denied ? t("err_mic_denied") : t("err_mic_failed", { name: err.name }));
+    return;
+  }
+
+  const mimeType = pickMimeType();
+  let recorder;
+  try {
+    recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+  } catch (err) {
+    stream.getTracks().forEach((track) => track.stop());
+    showBanner(`${err.message}`);
+    return;
+  }
+
+  const chunks = [];
+  recorder.addEventListener("dataavailable", (event) => {
+    if (event.data.size > 0) chunks.push(event.data);
+  });
+  recorder.addEventListener("stop", () => {
+    const type = recorder.mimeType || mimeType || "audio/webm";
+    stream.getTracks().forEach((track) => track.stop());
+    finishFieldAnswer(name, question, new Blob(chunks, { type }), type);
+  });
+
+  answer.field = name;
+  answer.recorder = recorder;
+  answer.stream = stream;
+  answer.startedAt = Date.now();
+  recorder.start(250);
+
+  const button = ui.fieldList.querySelector(`[data-mic="${name}"]`);
+  button.classList.add("recording");
+  button.innerHTML = STOP_ICON;
+  button.title = t("answer_stop");
+  setMicsEnabled(false, name);
+  showAnswerStatus(name, t("answer_recording", { seconds: MAX_ANSWER_SECONDS }));
+
+  answer.timer = setInterval(() => {
+    const left = Math.ceil(MAX_ANSWER_SECONDS - (Date.now() - answer.startedAt) / 1000);
+    if (left <= 0) stopFieldAnswer();
+    else showAnswerStatus(name, t("answer_recording", { seconds: left }));
+  }, 250);
+}
+
+function stopFieldAnswer() {
+  if (answer.recorder && answer.recorder.state !== "inactive") answer.recorder.stop();
+}
+
+/** A small line under the field, so the state is visible where you are looking. */
+function showAnswerStatus(name, text) {
+  const row = ui.fieldList.querySelector(`[data-row="${name}"]`);
+  if (!row) return;
+
+  let status = row.querySelector(".field-answer");
+  if (!status) {
+    status = document.createElement("div");
+    status.className = "field-answer";
+    status.style.gridColumn = "2";
+    row.append(status);
+  }
+  status.hidden = false;
+  status.textContent = text;
+}
+
+function clearAnswerStatus(name) {
+  const status = ui.fieldList.querySelector(`[data-row="${name}"] .field-answer`);
+  if (status) status.hidden = true;
+}
+
+/** Transcribe the spoken answer and put it in the field. */
+async function finishFieldAnswer(name, question, blob, type) {
+  if (answer.timer) clearInterval(answer.timer);
+  Object.assign(answer, { field: null, recorder: null, stream: null, timer: null });
+
+  const button = ui.fieldList.querySelector(`[data-mic="${name}"]`);
+  button.classList.remove("recording");
+  button.classList.add("busy");
+  button.innerHTML = SPIN_ICON;
+  button.title = t("answer_transcribing");
+  showAnswerStatus(name, t("answer_transcribing"));
+
+  try {
+    if (blob.size === 0) {
+      showBanner(t("err_empty_recording"), "warn");
+      return;
+    }
+
+    const form = new FormData();
+    form.append("audio", blob, `answer.${extensionFor(type)}`);
+    form.append("model", ui.modelSelect.value || "base");
+    if (ui.vocabulary.value.trim()) form.append("vocabulary", ui.vocabulary.value.trim());
+    // Sent as decoding context. Measured to make little difference by itself;
+    // the vocabulary box above is what actually rescues a short answer.
+    if (question) form.append("context", question);
+
+    const response = await fetch("/jobs/transcribe", { method: "POST", body: form });
+    const payload = await response.json().catch(() => null);
+    if (!response.ok) {
+      showBanner(errorText(payload, response.status));
+      return;
+    }
+
+    const result = await awaitJob(payload.job_id);
+    if (!result) return;
+
+    const text = (result.text || "").trim();
+    if (!text) {
+      showBanner(t("answer_empty"), "warn");
+      return;
+    }
+    applyAnswer(name, text);
+  } catch (err) {
+    showBanner(t("err_network", { message: err.message }));
+  } finally {
+    button.classList.remove("busy");
+    button.innerHTML = MIC_ICON;
+    button.title = t("answer_aloud");
+    setMicsEnabled(true);
+    clearAnswerStatus(name);
+  }
+}
+
+/**
+ * Split a spoken list answer into items.
+ *
+ * People say list items as sentences -- "Fast. Cheap. Local." -- rather than
+ * as separate lines, so sentence boundaries are the natural split. Trailing
+ * sentence punctuation is dropped: "It must be fast!" reads oddly as a
+ * constraint, and the list is a set of phrases, not prose.
+ */
+function splitSpokenList(text) {
+  return text
+    .split(/(?<=[.!?])\s+|\n+/)
+    .map((part) => part.replace(/[.!?\s]+$/, "").trim())
+    .filter(Boolean);
+}
+
+/**
+ * Put a spoken answer into its field.
+ *
+ * Appended rather than replacing, so a second answer adds to the first and an
+ * existing typed value is never silently destroyed. List fields get one item
+ * per sentence, which is how people say them out loud.
+ */
+function applyAnswer(name, text) {
+  const input = ui.fieldList.querySelector(`[data-field="${name}"]`);
+  if (!input) return;
+
+  const existing = input.value.trim();
+  if (FIELDS[name].list) {
+    input.value = [existing, ...splitSpokenList(text)].filter(Boolean).join("\n");
+  } else {
+    input.value = existing ? `${existing} ${text}` : text;
+  }
+
+  autoGrow(input);
+  refreshAnalysisState();
+  input.focus();
+  input.setSelectionRange(input.value.length, input.value.length);
+}
+
 function autoGrow(input) {
   input.style.height = "auto";
   input.style.height = `${Math.min(input.scrollHeight, 260)}px`;
@@ -1052,8 +1284,17 @@ function refreshAnalysisState() {
   return extraction;
 }
 
+/**
+ * Questions seen so far, by field.
+ *
+ * The server only sends a question for a field it found empty, but a filled
+ * field can still be answered aloud, and the question is what primes Whisper.
+ */
+const FIELD_QUESTIONS = {};
+
 function renderFields(extraction, missing) {
   const questionFor = new Map((missing || []).map((m) => [m.field, m.question]));
+  for (const [field, question] of questionFor) FIELD_QUESTIONS[field] = question;
 
   ui.fieldList.innerHTML = "";
   for (const [name, spec] of Object.entries(FIELDS)) {
@@ -1065,7 +1306,12 @@ function renderFields(extraction, missing) {
     label.textContent = spec.label;
     label.htmlFor = `field-${name}`;
 
-    row.append(label, buildFieldInput(name, extraction[name], questionFor.get(name)));
+    const question = questionFor.get(name) || FIELD_QUESTIONS[name] || "";
+    row.append(
+      label,
+      buildFieldInput(name, extraction[name], questionFor.get(name)),
+      buildFieldMic(name, question),
+    );
     ui.fieldList.append(row);
   }
 
